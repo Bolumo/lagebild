@@ -50,16 +50,19 @@ summary{color:var(--dim)}
 </div>
 
 <div class="card">
-  <div class="hint" id="live" style="margin-top:0">Live: –</div>
+  <div class="hint" id="archiv" style="margin-top:0">Archiv: –</div>
+  <div class="hint" id="live">Live: –</div>
   <div class="hint" id="lauf">Bereit</div>
   <table id="tab"></table>
 </div>
 
 <div class="card"><b>Aufzeichnungen</b> <a href="ansicht.html" style="float:right;color:var(--acc)">Ansicht öffnen</a><ul id="list"></ul></div>
 
-<details class="card"><summary>Einstellungen</summary>
+<details class="card" id="einst"><summary>Einstellungen</summary>
   <label class="hint" for="tok" style="display:block">GitHub-Token für Bolumo/lagebild-daten (bleibt auf diesem Gerät). Archiviert jede Aufzeichnung und findet den Mac-Hub.</label>
   <input id="tok" type="password" autocomplete="off" placeholder="github_pat_…">
+  <button id="tokCopy" style="margin-top:8px">Token kopieren</button>
+  <div class="hint">Safari und die App auf dem Home-Bildschirm speichern getrennt: hier kopieren, dort einfügen.</div>
 </details>
 
 <script>
@@ -174,17 +177,22 @@ function flush(s){
 /* ---------- Live zum Mac-Hub ---------- */
 const hub={url:null,key:null,ok:false};
 function setLive(t,cls){$('live').textContent=t;$('live').className='hint '+(cls||'')}
-async function findHub(){
-  const t=$('tok').value.trim();if(!t){hub.ok=false;return setLive('Live: kein Token (Einstellungen)','warn')}
-  try{
-    const r=await fetch(GH_API+'live.json',{headers:{Authorization:'Bearer '+t,Accept:'application/vnd.github.raw'},cache:'no-store'});
-    if(r.status===404){hub.ok=false;return setLive('Live: kein Mac-Hub eingerichtet','warn')}
-    if(!r.ok){hub.ok=false;return setLive(r.status===401?'Live: Token ungültig oder abgelaufen':'Live: GitHub-Fehler '+r.status,'bad')}
+async function findHub(){  // prüft Archiv-Zugang und sucht den Mac-Hub
+  const t=$('tok').value.trim();hub.ok=false;
+  if(!t){$('einst').open=true;setLive('Live: aus','');return setArchiv('Archiv: kein Token – Messungen werden nicht gespeichert. Token unter „Einstellungen“ eintragen.','bad')}
+  const H={Authorization:'Bearer '+t};
+  try{const a=await fetch('https://api.github.com/repos/'+GH_REPO,{headers:H,cache:'no-store'});
+    if(!a.ok){setLive('Live: aus','');return setArchiv(a.status===401?'Archiv: Token ungültig oder abgelaufen':a.status===404?'Archiv: Token hat keinen Zugriff auf lagebild-daten':'Archiv: GitHub-Fehler '+a.status,'bad')}
+    setArchiv('Archiv: verbunden ✓','ok')}
+  catch(e){setLive('Live: aus','');return setArchiv('Archiv: GitHub nicht erreichbar (offline?)','bad')}
+  try{const r=await fetch(GH_API+'live.json',{headers:Object.assign({Accept:'application/vnd.github.raw'},H),cache:'no-store'});
+    if(!r.ok)return setLive('Live: aus (kein Mac-Hub)','');
     const j=await r.json();hub.url=String(j.url).replace(/\/$/,'');hub.key=j.key;
     const p=await fetch(hub.url+'/api/ping?k='+encodeURIComponent(hub.key),{cache:'no-store'});
     hub.ok=p.ok;setLive(hub.ok?'Live: verbunden mit Mac-Hub':'Live: Hub antwortet nicht ('+p.status+')',hub.ok?'ok':'bad');
-  }catch(e){hub.ok=false;setLive('Live: Mac-Hub nicht erreichbar','bad')}
+  }catch(e){setLive('Live: Mac-Hub nicht erreichbar','bad')}
 }
+function setArchiv(t,cls){$('archiv').textContent=t;$('archiv').className='hint '+(cls||'')}
 function send(body){
   body.k=hub.key;  // text/plain: kein CORS-Vorabaufruf, eine Anfrage pro Sekunde
   return fetch(hub.url+'/api/ingest',{method:'POST',headers:{'Content-Type':'text/plain'},body:JSON.stringify(body)})
@@ -233,7 +241,10 @@ setInterval(()=>{if(sess)tick()},500);
 $('modes').onclick=e=>{const m=e.target.dataset&&e.target.dataset.m;if(!m||sess)return;mode=m;ls.set('modus',m);ui()};
 $('go').onclick=()=>sess?stop():start();
 $('tok').value=ls.get('ghToken')||'';
-$('tok').oninput=()=>{ls.set('ghToken',$('tok').value.trim());ui();findHub()};
+$('tok').oninput=()=>{ls.set('ghToken',$('tok').value.trim());halten();ui();findHub()};
+$('tokCopy').onclick=async()=>{try{await navigator.clipboard.writeText($('tok').value.trim());$('tokCopy').textContent='Kopiert ✓'}catch(e){$('tokCopy').textContent='Kopieren nicht möglich'}};
+const halten=()=>{if($('tok').value.trim()&&navigator.storage&&navigator.storage.persist)navigator.storage.persist().catch(()=>{})};  // Speicher nicht vom Browser räumen lassen
+halten();
 document.addEventListener('visibilitychange',()=>{if(document.visibilityState==='visible'){if(sess)wake();findHub()}});
 if('serviceWorker' in navigator)navigator.serviceWorker.register('sw.js').catch(()=>{});
 ui();findHub();
