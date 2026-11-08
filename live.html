@@ -1,0 +1,95 @@
+<!doctype html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Lagebild Live</title>
+<style>
+:root{--bg:#0b1220;--card:#131c2e;--line:#26324a;--text:#e6edf7;--dim:#8a98b3;--acc:#4da3ff;--ok:#3ddc97;--bad:#ff5d5d}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--text);font:14px/1.4 -apple-system,system-ui,sans-serif;padding:16px}
+h1{font-size:18px;margin:0}
+.dim{color:var(--dim)}.ok{color:var(--ok)}.bad{color:var(--bad)}
+.card{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:12px;margin-top:12px}
+.grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(300px,1fr));gap:10px;margin-top:10px}
+.plot{border:1px solid var(--line);border-radius:8px;padding:6px 8px}
+.plot div{display:flex;justify-content:space-between;gap:8px;font-size:12px;font-variant-numeric:tabular-nums}
+canvas{display:block;width:100%;height:70px;margin-top:4px}
+canvas.spek{height:140px}
+pre{white-space:pre-wrap;font-size:12px;margin:6px 0 0}
+details{border-top:1px solid var(--line);padding:6px 0}
+</style>
+</head>
+<body>
+<h1>Lagebild Live</h1>
+<div class="dim" id="status">verbinde …</div>
+<div class="card"><div id="kopf" class="dim">Noch keine Aufzeichnung. Am iPhone einen Modus starten.</div><div class="grid" id="plots"></div></div>
+<div class="card"><b>Auswertungen</b><div id="ausw" class="dim">noch keine</div></div>
+<script>
+'use strict';
+/* Zeigt die Rohdaten des Messgeräts live: pro Strom und Spalte die letzten 30 s. */
+const $=id=>document.getElementById(id);
+const K=new URLSearchParams(location.search).get('k')||'',FENSTER=30000,AUSLASSEN=['mit_schwerkraft','video_s'];
+const S={};let seit=0,letzte=0,aktiv=null,neu=false,gebaut='',fehler='';
+async function poll(){
+  try{const r=await fetch('api/live?k='+encodeURIComponent(K)+'&seit='+seit,{cache:'no-store'});
+    if(r.status===403){fehler='Schlüssel fehlt oder falsch – die Adresse mit ?k=… aus der Hub-Ausgabe öffnen.';return setTimeout(poll,3000)}
+    const j=await r.json();fehler='';for(const [n,m] of j.msgs){seit=n;nimm(m)}
+    if(j.msgs.length)neu=true}
+  catch(e){fehler='Hub nicht erreichbar'}
+  setTimeout(poll,500)}
+function nimm(m){
+  letzte=Date.now();
+  if(m.auswertung){zeigeAuswertung(m);return}
+  const s=S[m.session]||(S[m.session]={id:m.session,meta:{},streams:{}});
+  if(m.meta)s.meta=m.meta;if(m.final)s.final=true;
+  for(const [k,rows] of Object.entries(m.chunk||{})){if(!rows.length)continue;const a=s.streams[k]||(s.streams[k]=[]);a.push(...rows);
+    const grenze=a[a.length-1][0]-FENSTER;let i=0;while(i<a.length&&a[i][0]<grenze)i++;if(i)a.splice(0,i)}
+  aktiv=s}
+function zeigeAuswertung(m){
+  const box=$('ausw');if(box.classList.contains('dim')){box.textContent='';box.classList.remove('dim')}
+  const d=document.createElement('details'),sm=document.createElement('summary'),pre=document.createElement('pre');
+  sm.textContent=m.kurz;pre.textContent=m.auswertung;d.append(sm,pre);box.prepend(d)}
+
+function aufbauen(s){
+  const p=$('plots');p.textContent='';
+  for(const [name,rows] of Object.entries(s.streams)){
+    const cols=(s.meta.columns&&s.meta.columns[name])||rows[0].map((_,i)=>i?'w'+i:'ms');
+    const spalten=name==='spek'?[{titel:'spek (Spektrogramm)',i:-1}]:cols.map((c,i)=>({titel:name+' · '+c,i})).filter(c=>c.i>0&&!AUSLASSEN.includes(cols[c.i]));
+    for(const c of spalten){const d=document.createElement('div');d.className='plot';
+      d.innerHTML='<div><b></b><span></span></div><canvas></canvas>';d.querySelector('b').textContent=c.titel;
+      if(c.i<0)d.querySelector('canvas').className='spek';d.dataset.strom=name;d.dataset.i=c.i;p.appendChild(d)}}
+  gebaut=s.id+'|'+Object.keys(s.streams).join()}
+
+function zeichnen(){
+  $('status').className=fehler?'bad':Date.now()-letzte<3000?'ok':'dim';
+  $('status').textContent=fehler||(letzte?'letzte Daten vor '+((Date.now()-letzte)/1000).toFixed(0)+' s':'verbunden, warte auf Daten');
+  if(!neu||!aktiv)return;neu=false;const s=aktiv;
+  if(gebaut!==s.id+'|'+Object.keys(s.streams).join())aufbauen(s);
+  const tmax=Math.max(0,...Object.values(s.streams).map(a=>a[a.length-1][0]));
+  $('kopf').textContent=(s.meta.mode||'?')+' · '+(s.meta.start||'').slice(11,19)+' · '+(tmax/1000).toFixed(0)+' s · '+(s.final?'beendet':'läuft')+(s.meta.reference?' · Referenz: '+s.meta.reference:'');
+  $('kopf').className=s.final?'dim':'ok';
+  for(const d of document.querySelectorAll('.plot')){const rows=s.streams[d.dataset.strom]||[],i=+d.dataset.i,cv=d.querySelector('canvas');
+    const t5=rows.filter(r=>r[0]>tmax-5000).length/5;
+    if(i<0){spektrogramm(cv,rows,tmax);d.querySelector('span').textContent=t5.toFixed(1)+' Hz';continue}
+    const mm=linie(cv,rows,i,tmax),last=rows.length?rows[rows.length-1][i]:null;
+    d.querySelector('span').textContent=(last==null?'–':last)+(mm?'  ['+fmt(mm[0])+' … '+fmt(mm[1])+']':'')+'  '+t5.toFixed(1)+' Hz'}}
+const fmt=v=>Math.abs(v)>=100?v.toFixed(0):Math.abs(v)>=1?v.toFixed(2):v.toPrecision(3);
+function leinwand(cv){const w=cv.width=cv.clientWidth*devicePixelRatio,h=cv.height=cv.clientHeight*devicePixelRatio,c=cv.getContext('2d');c.clearRect(0,0,w,h);return[c,w,h]}
+function linie(cv,rows,i,tmax){
+  const [c,w,h]=leinwand(cv),t0=tmax-FENSTER,pts=rows.filter(r=>Number.isFinite(r[i]));if(pts.length<2)return null;
+  let mn=Infinity,mx=-Infinity;for(const r of pts){if(r[i]<mn)mn=r[i];if(r[i]>mx)mx=r[i]}const sp=(mx-mn)||1;
+  c.strokeStyle='#4da3ff';c.lineWidth=1.5*devicePixelRatio;c.beginPath();
+  pts.forEach((r,k)=>{const x=(r[0]-t0)/FENSTER*w,y=h-2-(r[i]-mn)/sp*(h-4);k?c.lineTo(x,y):c.moveTo(x,y)});c.stroke();return[mn,mx]}
+function spektrogramm(cv,rows,tmax){
+  const [c,w,h]=leinwand(cv);if(!rows.length)return;const n=rows[0].length-1;let mn=Infinity,mx=-Infinity;
+  for(const r of rows)for(let j=1;j<=n;j++){const v=r[j];if(Number.isFinite(v)){if(v<mn)mn=v;if(v>mx)mx=v}}
+  const img=c.createImageData(rows.length,n),sp=(mx-mn)||1;
+  rows.forEach((r,x)=>{for(let j=1;j<=n;j++){const v=Number.isFinite(r[j])?(r[j]-mn)/sp:0,o=((n-j)*rows.length+x)*4;
+    img.data[o]=255*Math.min(1,v*1.6);img.data[o+1]=255*Math.max(0,v*1.6-.6);img.data[o+2]=90*(1-v);img.data[o+3]=255}});
+  const tmp=document.createElement('canvas');tmp.width=rows.length;tmp.height=n;tmp.getContext('2d').putImageData(img,0,0);
+  const x0=(rows[0][0]-(tmax-FENSTER))/FENSTER*w;c.imageSmoothingEnabled=false;c.drawImage(tmp,x0,0,w-x0,h)}
+poll();setInterval(zeichnen,500);
+</script>
+</body>
+</html>

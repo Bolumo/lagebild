@@ -1,45 +1,41 @@
-# Lagebild Lite – MM-Version
+# Lagebild Messgerät – MM-Version
 
-Kopie von Ralphs Prototyp ([Original](https://bssragu.github.io/lagebild/), Repo `BSSRAGU/lagebild`), Branch `mm-version`. Ziel: die Signale verstehen und gegen Referenzen messen. Befunde zum Original: `research/eingang/ralph-lagebild-lite.md`.
+Hervorgegangen aus Ralphs „Lagebild Lite“ ([Original](https://bssragu.github.io/lagebild/), Repo `BSSRAGU/lagebild`). Diese Version ist ein reines Messinstrument. Das iPhone nimmt Rohdaten auf und sendet sie. Auswertung und Anzeige laufen auf dem Mac. Es gibt keine Animationen und keine Auswertung auf dem Gerät, damit sich Fähigkeiten sauber auf dem Mac entwickeln lassen, ohne die App anzufassen.
 
-## Was anders ist als im Original
+Befunde zum Original: `research/eingang/ralph-lagebild-lite.md`.
 
-- **Rohdaten-Aufzeichnung je Modus** (Tab „Protokoll“ → „Aufzeichnungen“), Export als JSON über das Teilen-Menü (AirDrop an den Mac).
-- **Upload nach GitHub** beim Stopp (privates Daten-Repo, Token nur auf dem Gerät), Abholen und Auswerten auf dem Mac mit `github_abholen.py`.
-- **Referenzwert** pro Messung (z. B. „Polar H10 62/min“), wird beim Beenden mitgespeichert.
-- **Live-Versand an den Mac**, wenn die Seite vom Mac-Server kommt (`server.py`): Daten landen alle 3 s in `daten/<session>.jsonl` und werden nach dem Stopp automatisch ausgewertet (`auswertung.py`).
-- Prozentwert im Protokoll heißt jetzt ehrlich „Signalstärke“, keine Trefferquote.
-- Ohne WebGL (z. B. Blockierungsmodus) läuft die App ohne 3D-Grafik weiter, statt komplett auszufallen.
+## Aufbau
 
-## Starten
+| Teil | Dateien | Aufgabe |
+|---|---|---|
+| Messgerät (PWA) | `index.html`, `sw.js`, `manifest.webmanifest`, `icon-*.png` | Läuft unter https://bolumo.github.io/lagebild/. Modi: Kontakt, Sonar, Puls, Flug. Sendet jede Sekunde an den Hub und archiviert jede Aufzeichnung beim Stopp auf GitHub. Hält den Bildschirm während der Aufnahme wach. |
+| Mac-Hub | `server.py`, `live.html` | Empfängt die Daten, speichert sie (`daten/<session>.jsonl`), zeigt sie live und wertet nach dem Stopp aus. |
+| Auswertung | `auswertung.py` | Schätzt die Atemrate (Sonar), den Puls (Grünkanal) und Atmung/Puls aus dem Bewegungssensor per DFT auf den echten Zeitstempeln. Gilt nach jeder Änderung sofort, ohne Neustart. Von Hand: `python3 auswertung.py <datei>`. |
+| Archiv abholen | `github_abholen.py` | Holt Aufzeichnungen aus `Bolumo/lagebild-daten`, die ohne Hub entstanden sind, und wertet sie aus. |
 
-**Online (iPhone, ohne Mac):** https://bolumo.github.io/lagebild/ (GitHub Pages, Branch `mm-version`). Aufzeichnen und Exportieren funktionieren dort, der Live-Versand an den Mac nicht.
+## Einrichtung
 
-**Direkt nach GitHub (empfohlen):** Mit einem Token im Feld unter „Aufzeichnungen“ lädt die App jede beendete Aufzeichnung als `aufnahmen/<id>.json` ins private Repo `Bolumo/lagebild-daten` (Format wie der Export). Token: GitHub → Settings → Developer settings → Fine-grained tokens, nur dieses Repo, Berechtigung „Contents: Read and write“. Er bleibt im Browser des Geräts (localStorage). Auf dem Mac holt `python3 github_abholen.py` neue Aufzeichnungen alle 10 s ab und wertet sie aus (`daten/<id>.txt`).
+1. **iPhone:** Die Seite in Safari öffnen und über Teilen → „Zum Home-Bildschirm“ als App ablegen. Dort unter „Einstellungen“ den GitHub-Token eintragen: fine-grained, nur Repo `lagebild-daten`, Berechtigung „Contents: Read and write“. Der Token bleibt auf dem Gerät. Die Home-Bildschirm-App hat einen eigenen Speicher, darum dort einmal neu eintragen.
+2. **Mac:** `python3 server.py <https-adresse>` starten. Der Hub lauscht nur auf `127.0.0.1:8443` und erzeugt bei jedem Start einen neuen Zugangsschlüssel. Er trägt die Adresse und den Schlüssel in `live.json` im Daten-Repo ein. Die App liest diese Datei mit ihrem Token und verbindet sich selbst.
+3. **Live-Ansicht:** Die Adresse mit `?k=…` aus der Ausgabe des Hubs im Browser öffnen. Ohne Schlüssel liefert der Hub keine Daten.
 
-**Mit Mac-Server (Live-Versand):**
+**Offen:** Das iPhone braucht eine HTTPS-Adresse, unter der es den Hub erreicht. Die Seite läuft über HTTPS, deshalb blockiert Safari Anfragen an `http://` im LAN. Welcher Weg dafür genommen wird, ist noch nicht entschieden.
 
-```sh
-./zertifikat.sh          # einmalig fürs iPhone (HTTPS); Anleitung steht im Skript
-python3 server.py        # iPhone: https://<Mac-Name>.local:8443/  (ohne Zertifikat nur http://localhost:8443)
-```
+## Datenformat (format 2)
 
-Sobald eine Aufzeichnung endet, wertet `auswertung.py` sie aus: Atemrate aus den Sonar-I/Q-Daten, Puls aus dem Grünkanal, Atmung und Puls aus dem Beschleunigungssensor, Tonhöhe im Flugmodus. Das Ergebnis liegt in `daten/<session>.txt`, die Konsole zeigt eine Zeile `AUSWERTUNG …`. Änderungen an `auswertung.py` gelten ohne Neustart des Servers. Von Hand: `python3 auswertung.py <datei>` (Live-Datei oder Export).
-
-Das iPhone muss im selben WLAN sein. Safari gibt Mikrofon, Kamera und Bewegungssensor nur über HTTPS frei – deshalb das eigene Zertifikat. `cert/` und `daten/` stehen in `.gitignore`.
-
-## Datenformat
-
-Eine Aufzeichnung = ein Modus von Start bis Stopp. Jede Zeile beginnt mit `ms` seit Start; Spaltennamen stehen in `columns`.
+Eine Aufzeichnung umfasst einen Modus von Start bis Stopp. Jede Zeile beginnt mit `ms` seit dem Start. Die Spaltennamen stehen in `columns`.
 
 | Modus | Strom | Spalten | Rate (ca.) |
 |---|---|---|---|
-| kontakt | `accel` | ms, ax, ay, az (m/s²), mit_schwerkraft | 60–100 Hz (nur iPhone) |
-| kontakt | `pegel` | ms, Vibration (Std.), Pegel 20–80 Hz, Pegel 100–4.000 Hz (dB) | 10 Hz |
-| sonar | `iq` | ms, I, Q (19-kHz-Echo, demoduliert) | 11,7 Hz |
+| kontakt | `accel` | ms, ax, ay, az (m/s²), mit_schwerkraft, rot_alpha, rot_beta, rot_gamma (°/s) | 60–100 Hz |
+| kontakt | `pegel` | ms, Pegel 20–80 Hz, Pegel 100–4.000 Hz (dB) | 10 Hz |
+| sonar | `iq` | ms, I, Q (19-kHz-Echo, je 4.096 Samples demoduliert) | 11,7 Hz |
 | sonar | `pegel` | ms, Trägerpegel (dB), Seitenband-Verhältnis | 6–7 Hz |
-| puls | `rgb` | ms, Videozeit (s), mittleres R, G, B der Bildmitte | Bildrate des Displays (Duplikate über `video_s` erkennbar) |
-| flug | `ton` | ms, stärkster Ton (Hz), Prominenz (dB), tonal (0/1) | 3,3 Hz |
-| flug | `spek` | ms, Spektrum 40–400 Hz in dB, je 1,465 Hz | 3,3 Hz |
+| puls | `rgb` | ms, Bildzeit (s), mittleres R, G, B der Bildmitte | ein Wert je Kamerabild |
+| flug | `ton` | ms, stärkster Ton 60–300 Hz, Prominenz (dB), tonal (0/1) | 3,3 Hz |
+| flug | `spek` | ms, Spektrum ab 40 Hz in dB, Bin = `audio_hz`/32768 | 3,3 Hz |
 
-Export-Datei: `{app, format, mode, start, end, ua, reference, columns, streams, events}`. Live-Datei (`.jsonl`): eine Zeile `meta`, dann `chunk`-Zeilen, am Ende `final` mit Referenz und Ereignissen; jede Zeile mit Empfangszeit des Macs.
+- **Archiv und Export:** `{app, format, mode, start, end, ua, audio_hz, reference, columns, streams}`.
+- **Live:** `POST /api/ingest` als `text/plain`, damit der Browser keine CORS-Vorabanfrage schickt. Die Nachrichten haben die Form `{k, session, meta | chunk | final}`.
+- **Live-Datei** (`daten/<session>.jsonl`): eine Nachricht pro Zeile, jeweils mit der Empfangszeit des Macs.
+- **Live-Ansicht:** fragt `GET /api/live?k=…&seit=<nr>` zweimal pro Sekunde ab.
