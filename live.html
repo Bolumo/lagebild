@@ -25,6 +25,7 @@ details{border-top:1px solid var(--line);padding:6px 0}
 <div class="dim" id="status">verbinde …</div>
 <div class="card"><div id="kopf" class="dim">Noch keine Aufzeichnung. Am iPhone einen Modus starten.</div><div class="grid" id="plots"></div></div>
 <div class="card"><b>Auswertungen</b><div id="ausw" class="dim">noch keine</div></div>
+<script src="plot.js"></script>
 <script>
 'use strict';
 /* Zeigt die Rohdaten des Messgeräts live: pro Strom und Spalte die letzten 30 s. */
@@ -71,24 +72,9 @@ function zeichnen(){
   $('kopf').className=s.final?'dim':'ok';
   for(const d of document.querySelectorAll('.plot')){const rows=s.streams[d.dataset.strom]||[],i=+d.dataset.i,cv=d.querySelector('canvas');
     const t5=rows.filter(r=>r[0]>tmax-5000).length/5;
-    if(i<0){spektrogramm(cv,rows,tmax);d.querySelector('span').textContent=t5.toFixed(1)+' Hz';continue}
-    const mm=linie(cv,rows,i,tmax),last=rows.length?rows[rows.length-1][i]:null;
+    if(i<0){spektrogramm(cv,rows,tmax-FENSTER,tmax);d.querySelector('span').textContent=t5.toFixed(1)+' Hz';continue}
+    const mm=linie(cv,rows,i,tmax-FENSTER,tmax),last=rows.length?rows[rows.length-1][i]:null;
     d.querySelector('span').textContent=(last==null?'–':last)+(mm?'  ['+fmt(mm[0])+' … '+fmt(mm[1])+']':'')+'  '+t5.toFixed(1)+' Hz'}}
-const fmt=v=>Math.abs(v)>=100?v.toFixed(0):Math.abs(v)>=1?v.toFixed(2):v.toPrecision(3);
-function leinwand(cv){const w=cv.width=cv.clientWidth*devicePixelRatio,h=cv.height=cv.clientHeight*devicePixelRatio,c=cv.getContext('2d');c.clearRect(0,0,w,h);return[c,w,h]}
-function linie(cv,rows,i,tmax){
-  const [c,w,h]=leinwand(cv),t0=tmax-FENSTER,pts=rows.filter(r=>Number.isFinite(r[i]));if(pts.length<2)return null;
-  let mn=Infinity,mx=-Infinity;for(const r of pts){if(r[i]<mn)mn=r[i];if(r[i]>mx)mx=r[i]}const sp=(mx-mn)||1;
-  c.strokeStyle='#4da3ff';c.lineWidth=1.5*devicePixelRatio;c.beginPath();
-  pts.forEach((r,k)=>{const x=(r[0]-t0)/FENSTER*w,y=h-2-(r[i]-mn)/sp*(h-4);k?c.lineTo(x,y):c.moveTo(x,y)});c.stroke();return[mn,mx]}
-function spektrogramm(cv,rows,tmax){
-  const [c,w,h]=leinwand(cv);if(!rows.length)return;const n=rows[0].length-1;let mn=Infinity,mx=-Infinity;
-  for(const r of rows)for(let j=1;j<=n;j++){const v=r[j];if(Number.isFinite(v)){if(v<mn)mn=v;if(v>mx)mx=v}}
-  const img=c.createImageData(rows.length,n),sp=(mx-mn)||1;
-  rows.forEach((r,x)=>{for(let j=1;j<=n;j++){const v=Number.isFinite(r[j])?(r[j]-mn)/sp:0,o=((n-j)*rows.length+x)*4;
-    img.data[o]=255*Math.min(1,v*1.6);img.data[o+1]=255*Math.max(0,v*1.6-.6);img.data[o+2]=90*(1-v);img.data[o+3]=255}});
-  const tmp=document.createElement('canvas');tmp.width=rows.length;tmp.height=n;tmp.getContext('2d').putImageData(img,0,0);
-  const x0=(rows[0][0]-(tmax-FENSTER))/FENSTER*w;c.imageSmoothingEnabled=false;c.drawImage(tmp,x0,0,w-x0,h)}
 poll();setInterval(zeichnen,500);
 </script>
 </body>

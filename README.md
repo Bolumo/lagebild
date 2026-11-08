@@ -9,6 +9,7 @@ Befunde zum Original: `research/eingang/ralph-lagebild-lite.md`.
 | Teil | Dateien | Aufgabe |
 |---|---|---|
 | Messgerät (PWA) | `index.html`, `sw.js`, `manifest.webmanifest`, `icon-*.png` | Läuft unter https://bolumo.github.io/lagebild/. Modi: Kontakt, Sonar, Puls, Flug. Sendet jede Sekunde an den Hub und archiviert jede Aufzeichnung beim Stopp auf GitHub. Hält den Bildschirm während der Aufnahme wach. |
+| Ansicht | `ansicht.html`, `plot.js` | Zeigt archivierte Aufzeichnungen vollständig unter https://bolumo.github.io/lagebild/ansicht.html, auf jedem Gerät, ohne Hub und ohne Tunnel. Neue Aufzeichnungen erscheinen wenige Sekunden nach dem Stopp. Braucht einen Token mit Lesezugriff auf `lagebild-daten`. |
 | Mac-Hub | `server.py`, `live.html` | Empfängt die Daten, speichert sie (`daten/<session>.jsonl`), zeigt sie live und wertet nach dem Stopp aus. |
 | Auswertung | `auswertung.py` | Schätzt die Atemrate (Sonar), den Puls (Grünkanal) und Atmung/Puls aus dem Bewegungssensor per DFT auf den echten Zeitstempeln. Gilt nach jeder Änderung sofort, ohne Neustart. Von Hand: `python3 auswertung.py <datei>`. |
 | Archiv abholen | `github_abholen.py` | Holt Aufzeichnungen aus `Bolumo/lagebild-daten`, die ohne Hub entstanden sind, und wertet sie aus. |

@@ -57,6 +57,8 @@ class Handler(http.server.BaseHTTPRequestHandler):
         q = parse_qs(url.query)
         if url.path in ("/", "/index.html"):
             return self._send(200, (ROOT / "live.html").read_bytes(), "text/html; charset=utf-8")
+        if url.path == "/plot.js":
+            return self._send(200, (ROOT / "plot.js").read_bytes(), "application/javascript; charset=utf-8")
         if not self._key_ok(q.get("k", [""])[0]):
             return self._send(403, b'{"fehler":"schluessel"}', "application/json")
         if url.path == "/api/ping":

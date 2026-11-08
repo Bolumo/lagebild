@@ -1,0 +1,88 @@
+<!doctype html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="theme-color" content="#0b1220">
+<title>Lagebild Ansicht</title>
+<style>
+:root{--bg:#0b1220;--card:#131c2e;--line:#26324a;--text:#e6edf7;--dim:#8a98b3;--acc:#4da3ff;--ok:#3ddc97;--bad:#ff5d5d}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--text);font:14px/1.4 -apple-system,system-ui,sans-serif;padding:16px}
+h1{font-size:18px;margin:0}
+.dim{color:var(--dim)}.ok{color:var(--ok)}.bad{color:var(--bad)}
+.card{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:12px;margin-top:12px}
+.grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(300px,1fr));gap:10px;margin-top:10px}
+.plot{border:1px solid var(--line);border-radius:8px;padding:6px 8px}
+.plot div{display:flex;justify-content:space-between;gap:8px;font-size:12px;font-variant-numeric:tabular-nums}
+canvas{display:block;width:100%;height:80px;margin-top:4px}
+canvas.spek{height:160px}
+input{width:100%;font:inherit;font-size:16px;color:var(--text);background:#0e1626;border:1px solid var(--line);border-radius:10px;padding:10px;margin-top:8px}
+ul{list-style:none;margin:6px 0 0;padding:0;max-height:220px;overflow:auto}
+li{padding:7px 6px;border-top:1px solid var(--line);cursor:pointer;font-variant-numeric:tabular-nums}
+li.on{background:#1b2740;color:var(--acc)}
+</style>
+</head>
+<body>
+<h1>Lagebild Ansicht</h1>
+<div class="dim" id="status">lade …</div>
+<details class="card" id="tokbox"><summary>GitHub-Token</summary>
+  <input id="tok" type="password" autocomplete="off" placeholder="github_pat_…">
+  <div class="dim" style="margin-top:6px">Lesezugriff auf Bolumo/lagebild-daten reicht. Der Token bleibt in diesem Browser.</div>
+</details>
+<div class="card"><b>Aufzeichnungen</b> <span class="dim">(neueste oben, prüft alle 10 s)</span><ul id="liste"></ul></div>
+<div class="card"><div id="kopf" class="dim">–</div><div class="grid" id="plots"></div></div>
+<script src="plot.js"></script>
+<script>
+'use strict';
+/* Zeigt die archivierten Aufzeichnungen aus dem privaten Daten-Repo, jeweils komplett.
+   Neue Aufzeichnungen erscheinen wenige Sekunden nach dem Stopp am iPhone. */
+const $=id=>document.getElementById(id);
+const API='https://api.github.com/repos/Bolumo/lagebild-daten/contents/',AUSLASSEN=['mit_schwerkraft','video_s'];
+const ls={get:k=>{try{return localStorage.getItem(k)}catch(e){return null}},set:(k,v)=>{try{localStorage.setItem(k,v)}catch(e){}}};
+let namen=[],gewaehlt=null,auto=true;const daten={};
+const zeit=n=>n.slice(n.indexOf('-')+1,-5);  // "sonar-2026-11-08T20-28-14-443Z.json" → Zeitstempel
+const datum=n=>{const m=zeit(n).match(/^(\d{4}-\d\d-\d\d)T(\d\d)-(\d\d)-(\d\d)-(\d+)Z$/);return m?new Date(m[1]+'T'+m[2]+':'+m[3]+':'+m[4]+'.'+m[5]+'Z'):null};
+function status(t,cls){$('status').textContent=t;$('status').className=cls||'dim'}
+async function gh(pfad,raw){
+  const r=await fetch(API+pfad,{headers:{Authorization:'Bearer '+$('tok').value.trim(),Accept:raw?'application/vnd.github.raw':'application/vnd.github+json'},cache:'no-store'});
+  if(!r.ok)throw r.status;return r.json()}
+
+async function aktualisieren(){
+  if(!$('tok').value.trim()){$('tokbox').open=true;return status('Token eintragen, dann geht es los.','bad')}
+  try{namen=(await gh('aufnahmen')).map(f=>f.name).filter(n=>n.endsWith('.json')).sort((a,b)=>zeit(b).localeCompare(zeit(a)))}
+  catch(e){if(e!==404)return status(e===401?'Token ungültig oder abgelaufen':'GitHub-Fehler '+e,'bad');namen=[]}
+  status('aktualisiert '+new Date().toLocaleTimeString('de-DE')+' · '+namen.length+' Aufzeichnungen','ok');
+  liste();if(auto&&namen.length&&namen[0]!==gewaehlt)zeige(namen[0])}
+function liste(){
+  const ul=$('liste');ul.textContent='';
+  if(!namen.length){ul.innerHTML='<li class="dim">Noch keine Aufzeichnung im Archiv.</li>';return}
+  for(const n of namen){const li=document.createElement('li'),d=datum(n),m=daten[n];
+    li.textContent=(d?d.toLocaleString('de-DE'):zeit(n))+' · '+n.slice(0,n.indexOf('-'))+(m&&m.reference?' · '+m.reference:'');
+    li.className=n===gewaehlt?'on':'';li.onclick=()=>{auto=n===namen[0];zeige(n)};ul.appendChild(li)}}
+
+async function zeige(n){
+  gewaehlt=n;liste();$('kopf').textContent='lade '+n+' …';
+  try{if(!daten[n])daten[n]=await gh('aufnahmen/'+n,true)}catch(e){$('kopf').textContent='Laden fehlgeschlagen ('+e+')';return}
+  if(gewaehlt!==n)return;const s=daten[n];liste();
+  const tmax=Math.max(1,...Object.values(s.streams||{}).map(a=>a.length?a[a.length-1][0]:0));
+  const zaehl=Object.entries(s.streams||{}).map(([k,a])=>k+' '+a.length+' ('+(a.length/(tmax/1000)).toFixed(1)+' Hz)').join(', ');
+  $('kopf').textContent=s.mode+' · '+(datum(n)||new Date(s.start)).toLocaleString('de-DE')+' · '+(tmax/1000).toFixed(1)+' s · '+zaehl+(s.reference?' · Referenz: '+s.reference:' · keine Referenz');
+  $('kopf').className='';
+  const p=$('plots');p.textContent='';
+  for(const [name,rows] of Object.entries(s.streams||{})){if(!rows.length)continue;
+    const cols=(s.columns&&s.columns[name])||rows[0].map((_,i)=>i?'w'+i:'ms');
+    const spalten=name==='spek'?[-1]:cols.map((c,i)=>i).filter(i=>i>0&&!AUSLASSEN.includes(cols[i]));
+    for(const i of spalten){const d=document.createElement('div');d.className='plot';
+      d.innerHTML='<div><b></b><span></span></div><canvas></canvas>';d.querySelector('b').textContent=i<0?'spek (Spektrogramm)':name+' · '+cols[i];
+      const cv=d.querySelector('canvas');if(i<0)cv.className='spek';p.appendChild(d);
+      if(i<0){spektrogramm(cv,rows,0,tmax);continue}
+      const mm=linie(cv,rows,i,0,tmax);d.querySelector('span').textContent=mm?fmt(mm[0])+' … '+fmt(mm[1]):'keine Werte'}}}
+
+$('tok').value=ls.get('ghToken')||'';
+$('tok').oninput=()=>{ls.set('ghToken',$('tok').value.trim());aktualisieren()};
+addEventListener('resize',()=>{if(gewaehlt&&daten[gewaehlt])zeige(gewaehlt)});
+aktualisieren();setInterval(aktualisieren,10000);
+</script>
+</body>
+</html>
