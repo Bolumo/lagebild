@@ -73,6 +73,8 @@ ul.log li .src{font-size:12px;color:var(--muted)}
 .row{display:flex;gap:10px}
 .sec{flex:1;min-height:50px;border-radius:14px;border:1px solid var(--line);background:rgba(33,48,70,.6);color:var(--text);font-family:var(--fd);font-weight:600;font-size:17px}
 .hint{font-size:13px;color:var(--muted);margin:10px 4px 0}
+.ref{width:100%;min-height:46px;margin-top:6px;border-radius:12px;border:1px solid var(--line);background:rgba(33,48,70,.6);color:var(--text);font:inherit;font-size:16px;padding:10px 12px}
+ul.log li .sec{min-height:40px;padding:0 12px;font-size:15px}
 nav{position:fixed;left:0;right:0;bottom:0;padding:8px 10px calc(10px + env(safe-area-inset-bottom,0px));background:rgba(11,19,34,.78);-webkit-backdrop-filter:blur(20px);backdrop-filter:blur(20px);border-top:1px solid var(--line);display:grid;grid-template-columns:repeat(5,1fr);gap:4px;z-index:5}
 nav button{background:transparent;border:0;color:var(--muted);border-radius:12px;min-height:54px;font-family:var(--fd);font-weight:600;font-size:14px;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:3px}
 nav button svg{width:22px;height:22px;stroke:currentColor;fill:none;stroke-width:1.8;stroke-linecap:round;stroke-linejoin:round}
@@ -148,8 +150,14 @@ nav button:focus-visible{outline:2px solid var(--blue)}
 <section id="log">
   <div class="ticker" style="margin-top:8px"><h3>Einsatzprotokoll</h3>
     <div class="row"><button class="sec" id="lShare">Teilen</button><button class="sec" id="lCopy">Kopieren</button><button class="sec" id="lClear">Leeren</button></div>
-    <div class="hint" id="lHint">Zeitstempel in Gerätezeit, Konfidenz in Prozent.</div>
+    <div class="hint" id="lHint">Zeitstempel in Gerätezeit. Prozentwert = Signalstärke aus festen Formeln, keine gemessene Trefferquote.</div>
     <ul class="log" id="lList" style="margin-top:8px"></ul>
+  </div>
+  <div class="ticker"><h3>Aufzeichnungen</h3>
+    <label class="hint" for="rRef" style="display:block;margin-top:0">Referenzwert zur Messung, z. B. „Polar H10 62/min, 14 Atemzüge gezählt, 1,5 m frontal“</label>
+    <input id="rRef" class="ref" type="text" autocomplete="off" enterkeyhint="done">
+    <div class="hint" id="rLive">Keine Live-Verbindung – Export über „Export“ (Teilen, AirDrop an den Mac).</div>
+    <ul class="log" id="rList" style="margin-top:8px"></ul>
   </div>
 </section>
 
@@ -171,7 +179,7 @@ let MODE='kontakt';const VALS={kontakt:['–','× Ruhe'],sonar:['–','Atemzüge
 function setVal(m,v){VALS[m][0]=v;if(m===MODE)$('val').textContent=v}
 function setLab(m,v){VALS[m][1]=v;if(m===MODE)$('lab').textContent=v}
 function showMode(m){MODE=m;$('val').textContent=VALS[m][0];$('lab').textContent=VALS[m][1];$('val').className='val'+(m==='flug'?' sm':'');$('scope').style.display=m==='log'?'none':''}
-(function bg(){
+(function bg(){try{ // ohne WebGL (z. B. Blockierungsmodus) läuft die App ohne 3D-Hintergrund weiter
   if(!window.THREE){return}
   const cv=$('bg3d');const rd=new THREE.WebGLRenderer({canvas:cv,antialias:true,alpha:true,powerPreference:'low-power'});rd.setPixelRatio(Math.min(2,window.devicePixelRatio||1));
   const sc=new THREE.Scene();sc.fog=new THREE.FogExp2(0x070c16,0.09);
@@ -196,7 +204,7 @@ function showMode(m){MODE=m;$('val').textContent=VALS[m][0];$('lab').textContent
     if(window.LB.alarm){const p=(Date.now()%900)/900;ring2.material.opacity=0.45*(1-p)+0.1;ring2.scale.setScalar(s+p*0.5)}
     cam.position.x=Math.sin(t*0.15)*0.6;cam.lookAt(0,0,0);rd.render(sc,cam);requestAnimationFrame(frame)}
   frame();
-})();
+}catch(e){console.warn('3D-Hintergrund aus:',e)}})();
 const css=n=>getComputedStyle(document.documentElement).getPropertyValue(n).trim();
 const fmt=d=>d.toTimeString().slice(0,8);
 setInterval(()=>{$('clock').textContent=fmt(new Date())},1000);$('clock').textContent=fmt(new Date());
@@ -218,9 +226,41 @@ $('lShare').onclick=async()=>{const txt=logText()||'Keine Ereignisse';try{if(nav
 $('lCopy').onclick=async()=>{try{await navigator.clipboard.writeText(logText()||'Keine Ereignisse');$('lHint').textContent='In die Zwischenablage kopiert.'}catch(e){$('lHint').textContent='Kopieren nicht möglich.'}};
 $('lClear').onclick=()=>{events.length=0;renderLog();$('lHint').textContent='Protokoll geleert.'};
 
+/* ---------- Aufzeichnung (MM-Version): Rohdaten je Modus, Export als JSON, Live-Versand an den Mac-Server ---------- */
+const r1=v=>Math.round(v*10)/10,r2=v=>Math.round(v*100)/100,r4=v=>Math.round(v*1e4)/1e4,p6=v=>Number(v.toPrecision(6));
+const COLS={
+  kontakt:{accel:['ms','ax','ay','az','mit_schwerkraft'],pegel:['ms','vibration_std','tief_db_20_80Hz','stimme_db_100_4000Hz']},
+  sonar:{iq:['ms','I','Q'],pegel:['ms','traeger_db','seitenband_verhaeltnis']},
+  puls:{rgb:['ms','video_s','r','g','b']},
+  flug:{ton:['ms','f_spitze_hz','prominenz_db','tonal'],spek:['ms','db_ab_40Hz_je_1.465Hz']}};
+const REC=(function(){
+  const run={},done=[];let live=false;
+  fetch('api/ping',{cache:'no-store'}).then(r=>r.ok?r.json():null).then(j=>{if(j&&j.ok){live=true;$('rLive').textContent='Live-Verbindung zum Mac: Rohdaten gehen direkt dorthin.'}}).catch(()=>{});
+  const post=body=>fetch('api/ingest',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)}).catch(()=>{$('rLive').textContent='Live-Verbindung unterbrochen – Export bleibt möglich.'});
+  const meta=s=>({app:'lagebild-mm',format:1,mode:s.mode,start:s.start,end:s.end||null,ua:s.ua,reference:s.reference||'',columns:COLS[s.mode]});
+  function flush(s){const ch=s.pending;s.pending={};if(Object.keys(ch).length)post({session:s.id,chunk:ch})}
+  function start(mode){const now=new Date();const s={id:mode+'-'+now.toISOString().replace(/[:.]/g,'-'),mode,start:now.toISOString(),ua:navigator.userAgent,t0:performance.now(),streams:{},pending:{}};run[mode]=s;
+    if(live){post({session:s.id,meta:meta(s)});s.timer=setInterval(()=>flush(s),3000)}}
+  function push(mode,stream,row){const s=run[mode];if(!s)return;row.unshift(Math.round(performance.now()-s.t0));(s.streams[stream]||(s.streams[stream]=[])).push(row);if(s.timer)(s.pending[stream]||(s.pending[stream]=[])).push(row)}
+  function stop(mode){const s=run[mode];if(!s)return;delete run[mode];s.end=new Date().toISOString();s.reference=$('rRef').value.trim();s.events=events.filter(e=>e.t>=s.start&&e.t<=s.end);
+    if(s.timer){clearInterval(s.timer);flush(s);post({session:s.id,meta:meta(s),events:s.events,final:true})}
+    delete s.pending;delete s.timer;done.push(s);render()}
+  async function exportS(s){if(!s.reference)s.reference=$('rRef').value.trim();
+    const f=new File([JSON.stringify(Object.assign(meta(s),{streams:s.streams,events:s.events}))],s.id+'.json',{type:'application/json'});
+    try{if(navigator.canShare&&navigator.canShare({files:[f]})){await navigator.share({files:[f],title:s.id});return}}catch(e){if(e.name==='AbortError')return}
+    const a=document.createElement('a');a.href=URL.createObjectURL(f);a.download=f.name;document.body.appendChild(a);a.click();setTimeout(()=>{URL.revokeObjectURL(a.href);a.remove()},1000)}
+  function render(){const ul=$('rList');ul.innerHTML='';
+    if(!done.length){ul.innerHTML='<li><time>–</time><span>Noch keine Aufzeichnung. Jeder gestartete Modus wird mitgeschrieben.</span><em></em></li>';return}
+    done.slice().reverse().forEach(s=>{const li=document.createElement('li');const n=Object.entries(s.streams).map(([k,v])=>k+' '+v.length).join(', ');const dur=Math.round((new Date(s.end)-new Date(s.start))/1000);
+      li.innerHTML='<time>'+fmt(new Date(s.start))+'</time><span>'+s.mode+' · '+dur+' s<br><span class="src">'+n+'</span></span><em></em>';
+      const b=document.createElement('button');b.className='sec';b.textContent='Export';b.onclick=()=>exportS(s);li.lastChild.appendChild(b);ul.appendChild(li)})}
+  render();
+  return{start,push,stop};
+})();
+
 /* ---------- Zeichnen ---------- */
 const AMB=()=>css('--amber'),TEAL=()=>css('--teal'),RED=()=>css('--red'),BLUE=()=>css('--blue');
-const SCOPE=(function(){
+const SCOPE=(function(){try{
   if(!window.THREE)return{update(){}};
   const cv=$('scope3d');const rd=new THREE.WebGLRenderer({canvas:cv,antialias:true,alpha:true});rd.setPixelRatio(Math.min(2,window.devicePixelRatio||1));rd.setClearColor(0x000000,0);
   const sc=new THREE.Scene();const cam=new THREE.PerspectiveCamera(38,1,0.1,50);cam.position.set(0,5.2,5.6);cam.lookAt(0,0,0);
@@ -267,7 +307,7 @@ const SCOPE=(function(){
     if($('scope').style.display!=='none')rd.render(sc,cam);requestAnimationFrame(frame)}
   frame();
   return{update(o){st=o}};
-})();
+}catch(e){console.warn('3D-Anzeige aus:',e);return{update(){}}}})();
 function scope(mode,level,hist,color,sweep){window.LB.level=level;window.LB.color=color;window.LB.alarm=(color===RED());if(mode===MODE)SCOPE.update({level,hist,color,sweep})}
 function strip(cv,arr,min,max,color){const c=cv.getContext('2d'),W=cv.width,H=cv.height;c.clearRect(0,0,W,H);c.strokeStyle=css('--line');c.lineWidth=1;c.beginPath();c.moveTo(0,H/2);c.lineTo(W,H/2);c.stroke();if(arr.length<2)return;c.save();c.shadowColor=color;c.shadowBlur=14;c.strokeStyle=color;c.lineWidth=3;c.beginPath();const n=arr.length;for(let i=0;i<n;i++){const x=i/(n-1)*W,y=H-((arr[i]-min)/((max-min)||1))*H;i?c.lineTo(x,y):c.moveTo(x,y)}c.stroke();c.restore()}
 function bar(id,v,cls){const b=$(id);b.className='bar'+(cls?' '+cls:'');b.firstElementChild.style.width=Math.max(0,Math.min(100,v*100))+'%'}
@@ -280,7 +320,7 @@ function dftPeak(series,fs,fmin,fmax){const n=series.length;let mean=0;for(const
 /* ---------- Kontaktsensor ---------- */
 let kOn=false,kAcc=[],kBase=null,kT0=0,kAn=null,kBuf=null,kSeries=[],kHist=[];
 async function kStart(){
-  if(kOn){kOn=false;window.removeEventListener('devicemotion',kMotion);go('kGo',false,'Messung starten','Messung beenden');state('kState','Beendet');return}
+  if(kOn){kOn=false;REC.stop('kontakt');window.removeEventListener('devicemotion',kMotion);go('kGo',false,'Messung starten','Messung beenden');state('kState','Beendet');return}
   $('kErr').textContent='';
   let motionOk=true;
   try{
@@ -288,15 +328,15 @@ async function kStart(){
     const st=await getMic();const ac=ctx();const src=ac.createMediaStreamSource(st);kAn=ac.createAnalyser();kAn.fftSize=4096;kAn.smoothingTimeConstant=0.3;src.connect(kAn);kBuf=new Float32Array(kAn.frequencyBinCount);
   }catch(e){$('kErr').textContent='Mikrofon nicht verfügbar: '+e.message+'. Die Seite muss direkt in Safari über HTTPS laufen, nicht in einem eingebetteten Fenster.';return}
   if(!motionOk)$('kErr').textContent='Bewegungssensor in diesem Fenster gesperrt – es läuft nur der Körperschall über das Mikrofon. Auf eigener Adresse (GitHub Pages o. ä.) ist beides verfügbar.';
-  kOn=true;kBase=null;kT0=Date.now();kAcc=[];kSeries=[];kHist=[];go('kGo',true,'Messung starten','Messung beenden');window.addEventListener('devicemotion',kMotion);kLoop();
+  kOn=true;kBase=null;kT0=Date.now();kAcc=[];kSeries=[];kHist=[];go('kGo',true,'Messung starten','Messung beenden');REC.start('kontakt');window.addEventListener('devicemotion',kMotion);kLoop();
 }
-function kMotion(e){if(!kOn)return;const a=e.acceleration||e.accelerationIncludingGravity;if(!a)return;kAcc.push(Math.hypot(a.x||0,a.y||0,a.z||0));if(kAcc.length>600)kAcc.shift()}
+function kMotion(e){if(!kOn)return;const a=e.acceleration||e.accelerationIncludingGravity;if(!a)return;REC.push('kontakt','accel',[r4(a.x||0),r4(a.y||0),r4(a.z||0),e.acceleration?0:1]);kAcc.push(Math.hypot(a.x||0,a.y||0,a.z||0));if(kAcc.length>600)kAcc.shift()}
 function kLoop(){
   if(!kOn)return;
   let vib=0;if(kAcc.length>20){const w=kAcc.slice(-30);const m=w.reduce((s,v)=>s+v,0)/w.length;vib=Math.sqrt(w.reduce((s,v)=>s+(v-m)**2,0)/w.length)}
   kAn.getFloatFrequencyData(kBuf);const binHz=48000/kAn.fftSize;
   const band=(lo,hi)=>{let s=0,n=0;for(let i=Math.floor(lo/binHz);i<=Math.floor(hi/binHz);i++){s+=Math.pow(10,kBuf[i]/10);n++}return 10*Math.log10(s/n+1e-12)};
-  const low=band(20,80),voice=band(100,4000);const el=(Date.now()-kT0)/1000;
+  const low=band(20,80),voice=band(100,4000);const el=(Date.now()-kT0)/1000;REC.push('kontakt','pegel',[r4(vib),r1(low),r1(voice)]);
   let level=0,color=TEAL();
   if(el<5){state('kState','Kalibriere Ruhe, '+Math.ceil(5-el)+' s',"live");setVal('kontakt',Math.ceil(5-el));setLab('kontakt','Sekunden ruhig halten');if(!kBase)kBase={vib:[],low:[],voice:[]};kBase.vib.push(vib);kBase.low.push(low);kBase.voice.push(voice);color=AMB()}
   else{
@@ -320,22 +360,22 @@ $('kGo').onclick=kStart;
 /* ---------- Sonar ---------- */
 let sOn=false,sOsc=null,sProc=null,sAn=null,sBuf=null,sI=[],sQ=[],sAmp=[],sT=[],sHist=[],sLastBr=0,sT0=0;const F0=19000;
 async function sStart(){
-  if(sOn){sOn=false;try{sOsc.stop()}catch(e){}if(sProc)sProc.disconnect();go('sGo',false,'Sonar starten','Sonar beenden');state('sState','Beendet');return}
+  if(sOn){sOn=false;REC.stop('sonar');try{sOsc.stop()}catch(e){}if(sProc)sProc.disconnect();go('sGo',false,'Sonar starten','Sonar beenden');state('sState','Beendet');return}
   $('sErr').textContent='';
   try{const st=await getMic();const ac=ctx();const src=ac.createMediaStreamSource(st);
     sAn=ac.createAnalyser();sAn.fftSize=8192;sAn.smoothingTimeConstant=0.5;src.connect(sAn);sBuf=new Float32Array(sAn.frequencyBinCount);
     sOsc=ac.createOscillator();sOsc.type='sine';sOsc.frequency.value=F0;const g=ac.createGain();g.gain.value=0.9;sOsc.connect(g).connect(ac.destination);sOsc.start();
     sProc=ac.createScriptProcessor(4096,1,1);let phase=0;const dph=2*Math.PI*F0/ac.sampleRate;
-    sProc.onaudioprocess=ev=>{const x=ev.inputBuffer.getChannelData(0);let I=0,Q=0;for(let i=0;i<x.length;i++){I+=x[i]*Math.cos(phase);Q+=x[i]*Math.sin(phase);phase+=dph;if(phase>2*Math.PI)phase-=2*Math.PI}I/=x.length;Q/=x.length;sI.push(I);sQ.push(Q);sAmp.push(Math.hypot(I,Q));sT.push(ac.currentTime);if(sAmp.length>400){sI.shift();sQ.shift();sAmp.shift();sT.shift()}};
+    sProc.onaudioprocess=ev=>{const x=ev.inputBuffer.getChannelData(0);let I=0,Q=0;for(let i=0;i<x.length;i++){I+=x[i]*Math.cos(phase);Q+=x[i]*Math.sin(phase);phase+=dph;if(phase>2*Math.PI)phase-=2*Math.PI}I/=x.length;Q/=x.length;REC.push('sonar','iq',[p6(I),p6(Q)]);sI.push(I);sQ.push(Q);sAmp.push(Math.hypot(I,Q));sT.push(ac.currentTime);if(sAmp.length>400){sI.shift();sQ.shift();sAmp.shift();sT.shift()}};
     src.connect(sProc);const sink=ac.createGain();sink.gain.value=0;sProc.connect(sink).connect(ac.destination);
   }catch(e){$('sErr').textContent='Konnte nicht starten: '+e.message;return}
-  sOn=true;sI=[];sQ=[];sAmp=[];sT=[];sHist=[];sT0=Date.now();go('sGo',true,'Sonar starten','Sonar beenden');sLoop();
+  sOn=true;sI=[];sQ=[];sAmp=[];sT=[];sHist=[];sT0=Date.now();go('sGo',true,'Sonar starten','Sonar beenden');REC.start('sonar');sLoop();
 }
 function sLoop(){
   if(!sOn)return;
   sAn.getFloatFrequencyData(sBuf);const binHz=48000/sAn.fftSize,cb=Math.round(F0/binHz),lin=i=>Math.pow(10,sBuf[i]/10);
   const car=lin(cb-1)+lin(cb)+lin(cb+1);let sb=0;for(let k=4;k<=40;k++)sb+=lin(cb-k)+lin(cb+k);const ratio=sb/(car+1e-12);
-  const cdb=10*Math.log10(car+1e-12);$('sCar').textContent=cdb.toFixed(0);
+  const cdb=10*Math.log10(car+1e-12);REC.push('sonar','pegel',[r1(cdb),r4(ratio)]);$('sCar').textContent=cdb.toFixed(0);
   const mv=Math.min(1,Math.log10(1+ratio*50)/2);$('sMov').textContent=ratio>0.08?'stark':ratio>0.025?'leicht':'keine';bar('sMovB',mv,ratio>0.08?'bad':ratio>0.025?'warn':'');
   let color=TEAL(),level=mv;
   if(cdb<-75){state('sState','Kein Trägersignal – Lautstärke prüfen','live');color=AMB()}
@@ -358,14 +398,14 @@ $('sGo').onclick=sStart;
 /* ---------- Puls ---------- */
 let pOn=false,pStream=null,pG=[],pT=[],pHist=[],pT0=0;const pCanvas=document.createElement('canvas');pCanvas.width=64;pCanvas.height=64;
 async function pStart(){
-  if(pOn){pOn=false;if(pStream)pStream.getTracks().forEach(t=>t.stop());go('pGo',false,'Kamera starten','Kamera beenden');state('pState','Beendet');return}
+  if(pOn){pOn=false;REC.stop('puls');if(pStream)pStream.getTracks().forEach(t=>t.stop());go('pGo',false,'Kamera starten','Kamera beenden');state('pState','Beendet');return}
   $('pErr').textContent='';
   try{pStream=await navigator.mediaDevices.getUserMedia({video:{facingMode:'user',width:{ideal:640},height:{ideal:480}},audio:false});$('pVid').srcObject=pStream;await $('pVid').play()}catch(e){$('pErr').textContent='Kamera nicht verfügbar: '+e.message;return}
-  pOn=true;pG=[];pT=[];pHist=[];pT0=performance.now();go('pGo',true,'Kamera starten','Kamera beenden');pLoop();
+  pOn=true;pG=[];pT=[];pHist=[];pT0=performance.now();go('pGo',true,'Kamera starten','Kamera beenden');REC.start('puls');pLoop();
 }
 function pLoop(){
   if(!pOn)return;const v=$('pVid');
-  if(v.videoWidth){const c=pCanvas.getContext('2d',{willReadFrequently:true});const sw=v.videoWidth*.4,sh=v.videoHeight*.4;c.drawImage(v,(v.videoWidth-sw)/2,(v.videoHeight-sh)/2,sw,sh,0,0,64,64);const d=c.getImageData(0,0,64,64).data;let g=0,r=0;for(let i=0;i<d.length;i+=4){r+=d[i];g+=d[i+1]}g/=d.length/4;r/=d.length/4;
+  if(v.videoWidth){const c=pCanvas.getContext('2d',{willReadFrequently:true});const sw=v.videoWidth*.4,sh=v.videoHeight*.4;c.drawImage(v,(v.videoWidth-sw)/2,(v.videoHeight-sh)/2,sw,sh,0,0,64,64);const d=c.getImageData(0,0,64,64).data;let g=0,r=0,bl=0;for(let i=0;i<d.length;i+=4){r+=d[i];g+=d[i+1];bl+=d[i+2]}g/=d.length/4;r/=d.length/4;bl/=d.length/4;REC.push('puls','rgb',[r2(v.currentTime),r2(r),r2(g),r2(bl)]);
     pG.push(g);pT.push(performance.now()/1000);if(pG.length>900){pG.shift();pT.shift()}
     const dur=pT[pT.length-1]-pT[0];$('pDur').textContent=Math.round(dur)+' s';
     let level=0,color=AMB();
@@ -385,11 +425,11 @@ $('pGo').onclick=pStart;
 /* ---------- Überflug (Doppler) ---------- */
 let fOn=false,fAn=null,fBuf=null,fTrack=[],fSpec=[],fHist=[],fT0=0,fEvent=null;const C=343;
 async function fStart(){
-  if(fOn){fOn=false;go('fGo',false,'Mithören starten','Mithören beenden');state('fState','Beendet');return}
+  if(fOn){fOn=false;REC.stop('flug');go('fGo',false,'Mithören starten','Mithören beenden');state('fState','Beendet');return}
   $('fErr').textContent='';
   try{const st=await getMic();const ac=ctx();const src=ac.createMediaStreamSource(st);fAn=ac.createAnalyser();fAn.fftSize=32768;fAn.smoothingTimeConstant=0.6;src.connect(fAn);fBuf=new Float32Array(fAn.frequencyBinCount)}
   catch(e){$('fErr').textContent='Konnte nicht starten: '+e.message;return}
-  fOn=true;fTrack=[];fSpec=[];fHist=[];fT0=Date.now();fEvent=null;go('fGo',true,'Mithören starten','Mithören beenden');fLoop();
+  fOn=true;fTrack=[];fSpec=[];fHist=[];fT0=Date.now();fEvent=null;go('fGo',true,'Mithören starten','Mithören beenden');REC.start('flug');fLoop();
 }
 function fLoop(){
   if(!fOn)return;
@@ -405,7 +445,7 @@ function fLoop(){
   let avg=0;for(let i=l2;i<h2;i++)avg+=Math.pow(10,fBuf[i]/10);avg=10*Math.log10(avg/(h2-l2)+1e-12);const prom=pk-avg;
   const now=(Date.now()-fT0)/1000;
   fSpec.push(col);if(fSpec.length>300)fSpec.shift();
-  const tonal=prom>12;setVal('flug',tonal?fpk.toFixed(1):'–');
+  const tonal=prom>12;setVal('flug',tonal?fpk.toFixed(1):'–');REC.push('flug','ton',[r2(fpk),r1(prom),tonal?1:0]);REC.push('flug','spek',Array.from(col,v=>Math.round(v)));
   fTrack.push({t:now,f:tonal?fpk:null,p:prom});if(fTrack.length>600)fTrack.shift();
   // Ereignis: zusammenhängende tonale Spur ≥ 15 s
   const run=[];for(let i=fTrack.length-1;i>=0&&fTrack[i].f!=null;i--)run.unshift(fTrack[i]);
