@@ -1,26 +1,30 @@
 # Lagebild Messgerät – MM-Version
 
-Hervorgegangen aus Ralphs „Lagebild Lite“ ([Original](https://bssragu.github.io/lagebild/), Repo `BSSRAGU/lagebild`). Diese Version ist ein reines Messinstrument. Das iPhone nimmt Rohdaten auf und sendet sie. Auswertung und Anzeige laufen auf dem Mac. Es gibt keine Animationen und keine Auswertung auf dem Gerät, damit sich Fähigkeiten sauber auf dem Mac entwickeln lassen, ohne die App anzufassen.
+Hervorgegangen aus Ralphs „Lagebild Lite“ ([Original](https://bssragu.github.io/lagebild/), Repo `BSSRAGU/lagebild`). Das iPhone ist ein reines Messinstrument, der Mac zeigt die Daten an und wertet sie aus. Es gibt keine Animationen, keine Auswertung auf dem Gerät, keinen Token und keine Cloud. Befunde zum Original stehen in `research/eingang/ralph-lagebild-lite.md`.
 
-Befunde zum Original: `research/eingang/ralph-lagebild-lite.md`.
+```
+iPhone (Messgerät)  ──WLAN, HTTPS──>  Mac: server.py  ──>  Anzeige im Browser, daten/, auswertung.py
+```
 
 ## Aufbau
 
 | Teil | Dateien | Aufgabe |
 |---|---|---|
-| Messgerät (PWA) | `index.html`, `sw.js`, `manifest.webmanifest`, `icon-*.png` | Läuft unter https://bolumo.github.io/lagebild/. Modi: Kontakt, Sonar, Puls, Flug. Sendet jede Sekunde an den Hub und archiviert jede Aufzeichnung beim Stopp auf GitHub. Hält den Bildschirm während der Aufnahme wach. |
-| Ansicht | `ansicht.html`, `plot.js` | Zeigt archivierte Aufzeichnungen vollständig unter https://bolumo.github.io/lagebild/ansicht.html, auf jedem Gerät, ohne Hub und ohne Tunnel. Neue Aufzeichnungen erscheinen wenige Sekunden nach dem Stopp. Braucht einen Token mit Lesezugriff auf `lagebild-daten`. |
-| Mac-Hub | `server.py`, `live.html` | Empfängt die Daten, speichert sie (`daten/<session>.jsonl`), zeigt sie live und wertet nach dem Stopp aus. |
-| Auswertung | `auswertung.py` | Schätzt die Atemrate (Sonar), den Puls (Grünkanal) und Atmung/Puls aus dem Bewegungssensor per DFT auf den echten Zeitstempeln. Gilt nach jeder Änderung sofort, ohne Neustart. Von Hand: `python3 auswertung.py <datei>`. |
-| Archiv abholen | `github_abholen.py` | Holt Aufzeichnungen aus `Bolumo/lagebild-daten`, die ohne Hub entstanden sind, und wertet sie aus. |
+| Messgerät (PWA) | `index.html`, `sw.js`, `manifest.webmanifest`, `icon-*.png` | Kommt vom Mac. Hat die Modi Kontakt, Sonar, Puls und Flug. Schickt jede Sekunde neue Zeilen für die Live-Anzeige und beim Stopp die ganze Aufzeichnung. Jede Aufzeichnung bleibt in der App gespeichert (IndexedDB), bis der Mac sie bestätigt; Ausstehendes wird nachgeschickt. Hält während der Aufnahme den Bildschirm wach. |
+| Anzeige | `anzeige.html`, `plot.js` | Zeigt oben die laufende Messung (letzte 30 s) und unten jede gespeicherte Aufzeichnung komplett mit Auswertung. |
+| Server | `server.py` | Liefert App und Anzeige aus, speichert `daten/<id>.json`, wertet sofort aus (`daten/<id>.txt`). |
+| Auswertung | `auswertung.py` | Atemrate (Sonar), Puls (Grünkanal), Atmung und Puls aus dem Bewegungssensor, per DFT auf den echten Zeitstempeln. Änderungen gelten ohne Neustart. Von Hand: `python3 auswertung.py <datei>`. |
+| Zertifikat | `zertifikat.sh` | Eigene CA, beschränkt auf lokale Adressen, dazu das HTTPS-Zertifikat für den Mac. |
 
-## Einrichtung
+## Einrichtung (einmalig)
 
-1. **iPhone:** Die Seite in Safari öffnen und über Teilen → „Zum Home-Bildschirm“ als App ablegen. Dort unter „Einstellungen“ den GitHub-Token eintragen: fine-grained, nur Repo `lagebild-daten`, Berechtigung „Contents: Read and write“. Der Token bleibt auf dem Gerät. Die Home-Bildschirm-App hat einen eigenen Speicher, darum dort einmal neu eintragen.
-2. **Mac:** `python3 server.py <https-adresse>` starten. Der Hub lauscht nur auf `127.0.0.1:8443` und erzeugt bei jedem Start einen neuen Zugangsschlüssel. Er trägt die Adresse und den Schlüssel in `live.json` im Daten-Repo ein. Die App liest diese Datei mit ihrem Token und verbindet sich selbst.
-3. **Live-Ansicht:** Die Adresse mit `?k=…` aus der Ausgabe des Hubs im Browser öffnen. Ohne Schlüssel liefert der Hub keine Daten.
+1. **Zertifikat erzeugen:** `./zertifikat.sh` ausführen.
+2. **Zertifikat aufs iPhone:** `cert/lagebild-ca.cer` per AirDrop schicken und unter Einstellungen → „Profil geladen“ installieren. Danach unter Einstellungen → Allgemein → Info → Zertifikatsvertrauenseinstellungen „Lagebild Test-CA“ einschalten. Safari gibt Mikrofon, Kamera und Bewegungssensor nur über HTTPS frei.
+3. **Server starten:** `python3 server.py`. Fragt die Mac-Firewall nach eingehenden Verbindungen, mit „Erlauben“ bestätigen.
+4. **iPhone:** In Safari `https://<Mac-Name>.local:8443/` öffnen und über Teilen → „Zum Home-Bildschirm“ als App ablegen.
+5. **Anzeige auf dem Mac:** `https://localhost:8443/anzeige` öffnen.
 
-**Offen:** Das iPhone braucht eine HTTPS-Adresse, unter der es den Hub erreicht. Die Seite läuft über HTTPS, deshalb blockiert Safari Anfragen an `http://` im LAN. Welcher Weg dafür genommen wird, ist noch nicht entschieden.
+iPhone und Mac müssen im selben WLAN sein.
 
 ## Datenformat (format 2)
 
@@ -36,7 +40,8 @@ Eine Aufzeichnung umfasst einen Modus von Start bis Stopp. Jede Zeile beginnt mi
 | flug | `ton` | ms, stärkster Ton 60–300 Hz, Prominenz (dB), tonal (0/1) | 3,3 Hz |
 | flug | `spek` | ms, Spektrum ab 40 Hz in dB, Bin = `audio_hz`/32768 | 3,3 Hz |
 
-- **Archiv und Export:** `{app, format, mode, start, end, ua, audio_hz, reference, columns, streams}`.
-- **Live:** `POST /api/ingest` als `text/plain`, damit der Browser keine CORS-Vorabanfrage schickt. Die Nachrichten haben die Form `{k, session, meta | chunk | final}`.
-- **Live-Datei** (`daten/<session>.jsonl`): eine Nachricht pro Zeile, jeweils mit der Empfangszeit des Macs.
-- **Live-Ansicht:** fragt `GET /api/live?k=…&seit=<nr>` zweimal pro Sekunde ab.
+- **Aufzeichnung** (`daten/<id>.json`, auch der Export aus der App): `{id, app, format, mode, start, end, ua, audio_hz, reference, columns, streams}`.
+- **Schnittstelle:**
+  - `POST /api/live` mit `{session, meta | chunk | final}` speist nur die Live-Anzeige und bleibt im Speicher.
+  - `POST /api/aufnahme` überträgt die ganze Aufzeichnung.
+  - `GET /api/aufnahmen` liefert die Liste der Aufzeichnungen, `GET /api/aufnahmen/<id>[.txt]` eine einzelne Aufzeichnung bzw. ihre Auswertung.

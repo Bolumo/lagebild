@@ -50,28 +50,19 @@ summary{color:var(--dim)}
 </div>
 
 <div class="card">
-  <div class="hint" id="archiv" style="margin-top:0">Archiv: –</div>
-  <div class="hint" id="live">Live: –</div>
+  <div class="hint" id="mac" style="margin-top:0">Mac: –</div>
   <div class="hint" id="lauf">Bereit</div>
   <table id="tab"></table>
 </div>
 
-<div class="card"><b>Aufzeichnungen</b> <a href="ansicht.html" style="float:right;color:var(--acc)">Ansicht öffnen</a><ul id="list"></ul></div>
-
-<details class="card" id="einst"><summary>Einstellungen</summary>
-  <label class="hint" for="tok" style="display:block">GitHub-Token für Bolumo/lagebild-daten (bleibt auf diesem Gerät). Archiviert jede Aufzeichnung und findet den Mac-Hub.</label>
-  <input id="tok" type="password" autocomplete="off" placeholder="github_pat_…">
-  <button id="tokCopy" style="margin-top:8px">Token kopieren</button>
-  <div class="hint">Safari und die App auf dem Home-Bildschirm speichern getrennt: hier kopieren, dort einfügen.</div>
-</details>
+<div class="card"><b>Aufzeichnungen</b><ul id="list"></ul></div>
 
 <script>
 'use strict';
-/* Messgerät: nimmt je Modus Rohdaten auf, schickt sie jede Sekunde an den Mac-Hub
-   (Adresse aus live.json im Daten-Repo) und archiviert jede Aufzeichnung beim Stopp
-   auf GitHub. Keine Auswertung auf dem Gerät – die läuft auf dem Mac. */
+/* Messgerät: nimmt je Modus Rohdaten auf und schickt sie an den Mac, von dem die App
+   geladen wurde – jede Sekunde für die Live-Anzeige, beim Stopp die ganze Aufzeichnung.
+   Jede Aufzeichnung bleibt in der App gespeichert, bis der Mac sie bestätigt hat. */
 const $=id=>document.getElementById(id);
-const GH_REPO='Bolumo/lagebild-daten',GH_API='https://api.github.com/repos/'+GH_REPO+'/contents/';
 const r1=v=>Math.round(v*10)/10,r2=v=>Math.round(v*100)/100,r4=v=>Math.round(v*1e4)/1e4,p6=v=>Number(v.toPrecision(6));
 const MODI={
   kontakt:{info:'iPhone flach auf Unterlage oder Körper. Beschleunigung und Drehrate (~100 Hz), Mikrofonpegel (10 Hz).',
@@ -84,7 +75,7 @@ const MODI={
     cols:{ton:['ms','f_spitze_hz','prominenz_db','tonal'],spek:['ms','db_ab_40Hz_je_bin']}}
 };
 const ls={get:k=>{try{return localStorage.getItem(k)}catch(e){return null}},set:(k,v)=>{try{localStorage.setItem(k,v)}catch(e){}}};
-let mode=MODI[ls.get('modus')]?ls.get('modus'):'sonar',sess=null;const done=[];
+let mode=MODI[ls.get('modus')]?ls.get('modus'):'sonar',sess=null,macOk=false;const done=[];
 
 /* ---------- Sensoren: jede Funktion startet den Modus und gibt eine Stopp-Funktion zurück ---------- */
 let actx=null;
@@ -148,9 +139,14 @@ const SENS={
 
 /* ---------- Aufzeichnung ---------- */
 function push(stream,row){const s=sess;if(!s)return;row.unshift(Math.round(performance.now()-s.t0));
-  (s.streams[stream]||(s.streams[stream]=[])).push(row);if(hub.ok)(s.pending[stream]||(s.pending[stream]=[])).push(row)}
-const meta=s=>({app:'lagebild-mm',format:2,mode:s.mode,start:s.start,end:s.end||null,ua:s.ua,audio_hz:actx?actx.sampleRate:null,reference:s.reference||'',columns:MODI[s.mode].cols});
-const json=s=>JSON.stringify(Object.assign(meta(s),{streams:s.streams}));
+  (s.streams[stream]||(s.streams[stream]=[])).push(row);if(macOk)(s.pending[stream]||(s.pending[stream]=[])).push(row)}
+const meta=s=>({app:'lagebild-mm',format:2,mode:s.mode,start:s.start,end:s.end||null,ua:s.ua,audio_hz:s.audio_hz!=null?s.audio_hz:(actx?actx.sampleRate:null),reference:s.reference||'',columns:MODI[s.mode].cols});
+const json=s=>JSON.stringify(Object.assign(meta(s),{id:s.id,streams:s.streams}));
+const rec=s=>({id:s.id,mode:s.mode,start:s.start,end:s.end,ua:s.ua,audio_hz:s.audio_hz,reference:s.reference,streams:s.streams,status:''});
+const DB=(()=>{let p=null;  // IndexedDB: Aufzeichnungen überleben Neustarts der App
+  const open=()=>p||(p=new Promise((res,rej)=>{const r=indexedDB.open('lagebild',1);r.onupgradeneeded=()=>r.result.createObjectStore('aufnahmen',{keyPath:'id'});r.onsuccess=()=>res(r.result);r.onerror=()=>rej(r.error)}));
+  const tx=(art,fn)=>open().then(db=>new Promise((res,rej)=>{const t=db.transaction('aufnahmen',art),q=fn(t.objectStore('aufnahmen'));t.oncomplete=()=>res(q.result);t.onerror=()=>rej(t.error)}));
+  return{put:o=>tx('readwrite',st=>st.put(o)),all:()=>tx('readonly',st=>st.getAll())}})();
 let wl=null;const wake=async()=>{try{wl=await navigator.wakeLock.request('screen')}catch(e){}};
 
 async function start(){
@@ -160,57 +156,37 @@ async function start(){
   sess={id:mode+'-'+now.toISOString().replace(/[:.]/g,'-'),mode,start:now.toISOString(),ua:navigator.userAgent,t0:performance.now(),streams:{},pending:{},q:Promise.resolve()};
   const s=sess;ui();
   try{s.stopSensor=await SENS[mode]()}catch(e){sess=null;$('err').textContent='Start fehlgeschlagen: '+e.message;ui();return}
-  s.timer=setInterval(()=>flush(s),1000);wake();findHub();
+  s.timer=setInterval(()=>flush(s),1000);wake();
 }
 function stop(){
   const s=sess;sess=null;clearInterval(s.timer);try{s.stopSensor&&s.stopSensor()}catch(e){}
-  s.end=new Date().toISOString();s.reference=$('ref').value.trim();$('ref').value='';
-  flush(s);if(s.metaSent)s.q=s.q.then(()=>send({session:s.id,meta:meta(s),final:true}));
-  delete s.pending;done.push(s);if(wl){wl.release().catch(()=>{});wl=null}ui();toGitHub(s);
+  s.end=new Date().toISOString();s.reference=$('ref').value.trim();$('ref').value='';s.audio_hz=actx?actx.sampleRate:null;
+  flush(s);if(s.metaSent)s.q=s.q.then(()=>post('api/live',{session:s.id,meta:meta(s),final:true}));
+  const r=rec(s);done.push(r);DB.put(r).catch(()=>{});if(wl){wl.release().catch(()=>{});wl=null}ui();senden(r);
 }
-function flush(s){
-  if(!hub.ok){s.pending={};return}
-  if(!s.metaSent){s.metaSent=true;s.q=s.q.then(()=>send({session:s.id,meta:meta(s)}))}
-  const ch=s.pending;s.pending={};if(Object.keys(ch).length)s.q=s.q.then(()=>send({session:s.id,chunk:ch}));
+function flush(s){  // Live-Anzeige auf dem Mac: jede Sekunde die neuen Zeilen
+  if(!macOk){s.pending={};return}
+  if(!s.metaSent){s.metaSent=true;s.q=s.q.then(()=>post('api/live',{session:s.id,meta:meta(s)}))}
+  const ch=s.pending;s.pending={};if(Object.keys(ch).length)s.q=s.q.then(()=>post('api/live',{session:s.id,chunk:ch}));
 }
+const post=(url,body)=>fetch(url,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)}).then(r=>{if(!r.ok)throw new Error(r.status)}).catch(()=>{});
 
-/* ---------- Live zum Mac-Hub ---------- */
-const hub={url:null,key:null,ok:false};
-function setLive(t,cls){$('live').textContent=t;$('live').className='hint '+(cls||'')}
-async function findHub(){  // prüft Archiv-Zugang und sucht den Mac-Hub
-  const t=$('tok').value.trim();hub.ok=false;
-  if(!t){$('einst').open=true;setLive('Live: aus','');return setArchiv('Archiv: kein Token – Messungen werden nicht gespeichert. Token unter „Einstellungen“ eintragen.','bad')}
-  const H={Authorization:'Bearer '+t};
-  try{const a=await fetch('https://api.github.com/repos/'+GH_REPO,{headers:H,cache:'no-store'});
-    if(!a.ok){setLive('Live: aus','');return setArchiv(a.status===401?'Archiv: Token ungültig oder abgelaufen':a.status===404?'Archiv: Token hat keinen Zugriff auf lagebild-daten':'Archiv: GitHub-Fehler '+a.status,'bad')}
-    setArchiv('Archiv: verbunden ✓','ok')}
-  catch(e){setLive('Live: aus','');return setArchiv('Archiv: GitHub nicht erreichbar (offline?)','bad')}
-  try{const r=await fetch(GH_API+'live.json',{headers:Object.assign({Accept:'application/vnd.github.raw'},H),cache:'no-store'});
-    if(!r.ok)return setLive('Live: aus (kein Mac-Hub)','');
-    const j=await r.json();hub.url=String(j.url).replace(/\/$/,'');hub.key=j.key;
-    const p=await fetch(hub.url+'/api/ping?k='+encodeURIComponent(hub.key),{cache:'no-store'});
-    hub.ok=p.ok;setLive(hub.ok?'Live: verbunden mit Mac-Hub':'Live: Hub antwortet nicht ('+p.status+')',hub.ok?'ok':'bad');
-  }catch(e){setLive('Live: Mac-Hub nicht erreichbar','bad')}
+/* ---------- Mac: Verbindung und vollständige Aufzeichnungen ---------- */
+async function pruefen(){
+  try{macOk=(await fetch('api/ping',{cache:'no-store'})).ok}catch(e){macOk=false}
+  $('mac').textContent=macOk?'Mac: verbunden ✓':'Mac nicht erreichbar – gleiches WLAN? Server läuft? Aufzeichnungen bleiben hier gespeichert.';
+  $('mac').className='hint '+(macOk?'ok':'bad');if(macOk)nachholen();
 }
-function setArchiv(t,cls){$('archiv').textContent=t;$('archiv').className='hint '+(cls||'')}
-function send(body){
-  body.k=hub.key;  // text/plain: kein CORS-Vorabaufruf, eine Anfrage pro Sekunde
-  return fetch(hub.url+'/api/ingest',{method:'POST',headers:{'Content-Type':'text/plain'},body:JSON.stringify(body)})
-    .then(r=>{if(!r.ok)throw new Error(r.status)}).catch(()=>setLive('Live: Übertragung gestört','bad'));
-}
-
-/* ---------- Archiv auf GitHub ---------- */
-function b64(str){const u=new TextEncoder().encode(str);let b='';for(let i=0;i<u.length;i+=0x8000)b+=String.fromCharCode.apply(null,u.subarray(i,i+0x8000));return btoa(b)}
-async function toGitHub(s){const t=$('tok').value.trim();if(!t)return;s.gh='lädt hoch …';ui();
-  try{const r=await fetch(GH_API+'aufnahmen/'+s.id+'.json',{method:'PUT',headers:{Authorization:'Bearer '+t,Accept:'application/vnd.github+json'},
-      body:JSON.stringify({message:s.id+(s.reference?' · '+s.reference:''),content:b64(json(s))})});
-    s.gh=r.ok?'auf GitHub ✓':r.status===401?'Token ungültig oder abgelaufen':'GitHub-Fehler '+r.status}catch(e){s.gh='GitHub nicht erreichbar'}
-  ui()}
+async function senden(s){if(s.status==='sendet …')return;s.status='sendet …';ui();
+  try{const r=await fetch('api/aufnahme',{method:'POST',headers:{'Content-Type':'application/json'},body:json(s)});s.status=r.ok?'auf dem Mac ✓':'Mac-Fehler '+r.status}
+  catch(e){s.status=''}
+  DB.put(s).catch(()=>{});ui()}
+async function nachholen(){for(const s of done.slice())if(s.status!=='auf dem Mac ✓')await senden(s)}
 async function exportS(s){const f=new File([json(s)],s.id+'.json',{type:'application/json'});
   try{if(navigator.canShare&&navigator.canShare({files:[f]})){await navigator.share({files:[f],title:s.id});return}}catch(e){if(e.name==='AbortError')return}
   const a=document.createElement('a');a.href=URL.createObjectURL(f);a.download=f.name;document.body.appendChild(a);a.click();setTimeout(()=>{URL.revokeObjectURL(a.href);a.remove()},1000)}
 
-/* ---------- Anzeige (nur Text, zweimal pro Sekunde) ---------- */
+/* ---------- Anzeige (nur Text) ---------- */
 function ui(){
   document.querySelectorAll('#modes button').forEach(b=>{b.classList.toggle('on',b.dataset.m===mode);b.disabled=!!sess});
   $('info').textContent=MODI[mode].info;$('go').textContent=sess?'Stopp':'Start';$('go').classList.toggle('stop',!!sess);
@@ -218,11 +194,8 @@ function ui(){
   if(!done.length)ul.innerHTML='<li><span class="hint" style="margin:0">Noch keine Aufzeichnung.</span></li>';
   done.slice().reverse().forEach(s=>{const li=document.createElement('li'),sp=document.createElement('span');
     const dur=Math.round((new Date(s.end)-new Date(s.start))/1000);
-    sp.textContent=s.start.slice(11,19)+' · '+s.mode+' · '+dur+' s'+(s.reference?' · '+s.reference:'')+(s.gh?' · '+s.gh:'');li.appendChild(sp);
-    const add=(txt,fn)=>{const b=document.createElement('button');b.textContent=txt;b.onclick=fn;li.appendChild(b)};
-    add('Export',()=>exportS(s));
-    if($('tok').value.trim()&&s.gh!=='auf GitHub ✓'&&s.gh!=='lädt hoch …')add('Hochladen',()=>toGitHub(s));
-    ul.appendChild(li)});
+    sp.textContent=new Date(s.start).toLocaleString('de-DE',{day:'2-digit',month:'2-digit',hour:'2-digit',minute:'2-digit',second:'2-digit'})+' · '+s.mode+' · '+dur+' s'+(s.reference?' · '+s.reference:'')+' · '+(s.status||'nur auf dem iPhone');
+    li.appendChild(sp);const b=document.createElement('button');b.textContent='Export';b.onclick=()=>exportS(s);li.appendChild(b);ul.appendChild(li)});
   tick();
 }
 function tick(){
@@ -240,14 +213,12 @@ setInterval(()=>{if(sess)tick()},500);
 /* ---------- Bedienung ---------- */
 $('modes').onclick=e=>{const m=e.target.dataset&&e.target.dataset.m;if(!m||sess)return;mode=m;ls.set('modus',m);ui()};
 $('go').onclick=()=>sess?stop():start();
-$('tok').value=ls.get('ghToken')||'';
-$('tok').oninput=()=>{ls.set('ghToken',$('tok').value.trim());halten();ui();findHub()};
-$('tokCopy').onclick=async()=>{try{await navigator.clipboard.writeText($('tok').value.trim());$('tokCopy').textContent='Kopiert ✓'}catch(e){$('tokCopy').textContent='Kopieren nicht möglich'}};
-const halten=()=>{if($('tok').value.trim()&&navigator.storage&&navigator.storage.persist)navigator.storage.persist().catch(()=>{})};  // Speicher nicht vom Browser räumen lassen
-halten();
-document.addEventListener('visibilitychange',()=>{if(document.visibilityState==='visible'){if(sess)wake();findHub()}});
+document.addEventListener('visibilitychange',()=>{if(document.visibilityState==='visible'){if(sess)wake();pruefen()}});
+setInterval(pruefen,10000);
+if(navigator.storage&&navigator.storage.persist)navigator.storage.persist().catch(()=>{});  // Speicher nicht vom Browser räumen lassen
 if('serviceWorker' in navigator)navigator.serviceWorker.register('sw.js').catch(()=>{});
-ui();findHub();
+ui();
+DB.all().then(a=>{a.sort((x,y)=>x.start<y.start?-1:1);a.forEach(s=>{if(s.status==='sendet …')s.status=''});done.push(...a);ui()}).catch(()=>{}).then(pruefen);
 </script>
 </body>
 </html>

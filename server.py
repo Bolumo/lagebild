@@ -1,27 +1,22 @@
 #!/usr/bin/env python3
-"""Mac-Hub für das Lagebild-Messgerät.
+"""Mac-Server für das Lagebild-Messgerät.
 
-    python3 server.py [ADRESSE]
+    ./zertifikat.sh      # einmalig, Anleitung im Skript
+    python3 server.py
 
-- Nimmt die Rohdaten des Messgeräts entgegen (POST /api/ingest), speichert jede
-  Aufzeichnung als daten/<session>.jsonl und wertet sie nach dem Stopp mit
-  auswertung.py aus (daten/<session>.txt).
-- Live-Ansicht im Browser: http://localhost:8443/?k=<schlüssel>
-- Lauscht nur auf 127.0.0.1. Damit das iPhone den Hub erreicht, braucht es eine
-  HTTPS-Adresse davor (siehe README). Wird sie als ADRESSE übergeben, trägt der
-  Hub sie mit dem Schlüssel in live.json im privaten Daten-Repo ein; die App
-  liest das mit ihrem Token und verbindet sich selbst.
+- iPhone (gleiches WLAN): https://<Mac-Name>.local:8443/       → Messgerät
+- Mac:                    https://localhost:8443/anzeige       → Anzeige (live + alle Aufzeichnungen)
+
+Das Messgerät schickt jede Sekunde neue Zeilen (nur für die Live-Anzeige, im
+Speicher) und beim Stopp die ganze Aufzeichnung. Die landet in daten/<id>.json und
+wird sofort mit auswertung.py ausgewertet (daten/<id>.txt).
 """
-import base64
 import http.server
 import importlib
 import json
 import re
-import secrets
-import subprocess
-import sys
+import ssl
 import threading
-from datetime import datetime, timezone
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
@@ -29,15 +24,18 @@ import auswertung
 
 ROOT = Path(__file__).resolve().parent
 DATA = ROOT / "daten"
+CERT, KEY = ROOT / "cert" / "server.pem", ROOT / "cert" / "server-key.pem"
 PORT = 8443
-MAX_BODY = 20 * 1024 * 1024
-REPO = "Bolumo/lagebild-daten"
-KEY = secrets.token_urlsafe(16)
-LIVE_MAX = 900  # Nachrichten im Speicher für die Live-Ansicht (~15 min bei 1/s)
+MAX_BODY = 50 * 1024 * 1024
+DATEIEN = {"/": "index.html", "/index.html": "index.html", "/anzeige": "anzeige.html", "/sw.js": "sw.js",
+           "/manifest.webmanifest": "manifest.webmanifest", "/plot.js": "plot.js",
+           "/icon-180.png": "icon-180.png", "/icon-192.png": "icon-192.png", "/icon-512.png": "icon-512.png"}
+TYPEN = {".html": "text/html; charset=utf-8", ".js": "application/javascript; charset=utf-8",
+         ".webmanifest": "application/manifest+json", ".png": "image/png"}
 
 LOCK = threading.Lock()
-LIVE = []  # [(nr, nachricht)]
-NR = 0
+LIVE, NR = [], 0  # [(nr, nachricht)] für die Live-Anzeige, nur im Speicher
+LIVE_MAX = 900
 
 
 def live_add(msg):
@@ -48,97 +46,105 @@ def live_add(msg):
         del LIVE[:-LIVE_MAX]
 
 
-class Handler(http.server.BaseHTTPRequestHandler):
-    def _key_ok(self, key):
-        return secrets.compare_digest(str(key or ""), KEY)
+def sauber(s):
+    return re.sub(r"[^A-Za-z0-9_-]", "", str(s))[:80]
 
+
+def liste():
+    """Alle Aufzeichnungen, neueste zuerst: Kopfdaten plus Kurzergebnis der Auswertung."""
+    out = []
+    for p in sorted(DATA.glob("*.json"), key=lambda p: p.stat().st_mtime, reverse=True):
+        try:
+            d = json.loads(p.read_text(encoding="utf-8"))
+        except ValueError:
+            continue
+        txt = p.with_suffix(".txt")
+        out.append({"id": p.stem, "mode": d.get("mode"), "start": d.get("start"), "end": d.get("end"),
+                    "reference": d.get("reference", ""), "kurz": txt.read_text(encoding="utf-8").split("\n")[-2] if txt.exists() else ""})
+    return out
+
+
+def auswerten(rid):
+    try:
+        importlib.reload(auswertung)  # Änderungen an auswertung.py gelten ohne Neustart
+        text, kurz = auswertung.auswerten(DATA / f"{rid}.json")
+        (DATA / f"{rid}.txt").write_text(text + "\n" + kurz + "\n", encoding="utf-8")
+        live_add({"auswertung": rid, "kurz": kurz})
+        print(f"AUSWERTUNG {rid}: {kurz}", flush=True)
+    except Exception as e:  # Auswertung darf den Empfang nie stören
+        print(f"AUSWERTUNG-FEHLER {rid}: {e!r}", flush=True)
+
+
+class Handler(http.server.BaseHTTPRequestHandler):
     def do_GET(self):
         url = urlparse(self.path)
-        q = parse_qs(url.query)
-        if url.path in ("/", "/index.html"):
-            return self._send(200, (ROOT / "live.html").read_bytes(), "text/html; charset=utf-8")
-        if url.path == "/plot.js":
-            return self._send(200, (ROOT / "plot.js").read_bytes(), "application/javascript; charset=utf-8")
-        if not self._key_ok(q.get("k", [""])[0]):
-            return self._send(403, b'{"fehler":"schluessel"}', "application/json")
+        if url.path in DATEIEN:
+            f = ROOT / DATEIEN[url.path]
+            return self._send(200, f.read_bytes(), TYPEN[f.suffix])
         if url.path == "/api/ping":
-            print("VERBUNDEN Messgerät", flush=True)
-            return self._send(200, b'{"ok":true}', "application/json")
+            return self._json({"ok": True})
         if url.path == "/api/live":
-            seit = int(q.get("seit", ["0"])[0] or 0)
+            seit = int(parse_qs(url.query).get("seit", ["0"])[0] or 0)
             with LOCK:
                 neu = [m for m in LIVE if m[0] > seit][:300]
-            return self._send(200, json.dumps({"msgs": neu}, separators=(",", ":")).encode(), "application/json")
+            return self._json({"msgs": neu})
+        if url.path == "/api/aufnahmen":
+            return self._json(liste())
+        m = re.fullmatch(r"/api/aufnahmen/([A-Za-z0-9_-]+)(\.txt)?", url.path)
+        if m and (DATA / f"{m[1]}.json").exists():
+            if m[2]:
+                txt = DATA / f"{m[1]}.txt"
+                return self._send(200, txt.read_bytes() if txt.exists() else b"", "text/plain; charset=utf-8")
+            return self._send(200, (DATA / f"{m[1]}.json").read_bytes(), "application/json")
         self._send(404, b"nicht gefunden", "text/plain; charset=utf-8")
 
     def do_POST(self):
-        if urlparse(self.path).path != "/api/ingest":
-            return self._send(404, b"nicht gefunden", "text/plain; charset=utf-8")
+        path = urlparse(self.path).path
         length = int(self.headers.get("Content-Length") or 0)
-        if not 0 < length <= MAX_BODY:
-            return self._send(413, b"leer oder zu gross", "text/plain; charset=utf-8")
+        if path not in ("/api/live", "/api/aufnahme") or not 0 < length <= MAX_BODY:
+            return self._send(400, b"falsche Anfrage", "text/plain; charset=utf-8")
         try:
             msg = json.loads(self.rfile.read(length))
         except ValueError:
             return self._send(400, b"kein JSON", "text/plain; charset=utf-8")
-        if not self._key_ok(msg.pop("k", None)):
-            return self._send(403, b'{"fehler":"schluessel"}', "application/json")
-        session = re.sub(r"[^A-Za-z0-9_-]", "", str(msg.get("session", "")))[:80] or "ohne-id"
-        msg["session"] = session
-        msg["empfangen"] = datetime.now(timezone.utc).isoformat()
+        if path == "/api/live":
+            msg["session"] = sauber(msg.get("session"))
+            live_add(msg)
+            if "meta" in msg and not msg.get("final"):
+                print(f"START {msg['session']}", flush=True)
+            return self._json({"ok": True})
+        rid = sauber(msg.get("id")) or "ohne-id"
         DATA.mkdir(exist_ok=True)
-        with LOCK, (DATA / f"{session}.jsonl").open("a", encoding="utf-8") as f:
-            f.write(json.dumps(msg, ensure_ascii=False, separators=(",", ":")) + "\n")
-        live_add(msg)
-        self._send(200, b'{"ok":true}', "application/json")
-        if "meta" in msg and not msg.get("final"):
-            print(f"START {session}", flush=True)
-        if msg.get("final"):  # kurz warten: der letzte Datenblock kann knapp danach ankommen
-            threading.Timer(1.5, auswerten, args=(session,)).start()
+        (DATA / f"{rid}.json").write_text(json.dumps(msg, ensure_ascii=False, separators=(",", ":")), encoding="utf-8")
+        self._json({"ok": True})
+        threading.Thread(target=auswerten, args=(rid,)).start()
 
     def log_message(self, *args):  # Zugriffsprotokoll aus
         pass
+
+    def _json(self, obj):
+        self._send(200, json.dumps(obj, ensure_ascii=False, separators=(",", ":")).encode(), "application/json")
 
     def _send(self, code, body, ctype):
         self.send_response(code)
         self.send_header("Content-Type", ctype)
         self.send_header("Content-Length", str(len(body)))
         self.send_header("Cache-Control", "no-store")
-        self.send_header("Access-Control-Allow-Origin", "*")  # Zugriff regelt der Schlüssel
         self.end_headers()
         self.wfile.write(body)
 
 
-def auswerten(session):
-    try:
-        importlib.reload(auswertung)  # Änderungen an auswertung.py gelten ohne Neustart
-        text, kurz = auswertung.auswerten(DATA / f"{session}.jsonl")
-        (DATA / f"{session}.txt").write_text(text + "\n", encoding="utf-8")
-        live_add({"session": session, "auswertung": text, "kurz": kurz})
-        print(f"AUSWERTUNG {session}: {kurz}", flush=True)
-    except Exception as e:  # Auswertung darf den Empfang nie stören
-        print(f"AUSWERTUNG-FEHLER {session}: {e!r}", flush=True)
-
-
-def live_json(url):
-    """Trägt Adresse und Schlüssel in live.json im Daten-Repo ein (über die angemeldete gh-CLI)."""
-    pfad = f"repos/{REPO}/contents/live.json"
-    alt = subprocess.run(["gh", "api", pfad, "--jq", ".sha"], capture_output=True, text=True)
-    inhalt = {"url": url.rstrip("/"), "key": KEY, "seit": datetime.now(timezone.utc).isoformat()}
-    body = {"message": "Hub gestartet", "content": base64.b64encode(json.dumps(inhalt).encode()).decode()}
-    if alt.returncode == 0:
-        body["sha"] = alt.stdout.strip()
-    r = subprocess.run(["gh", "api", "-X", "PUT", pfad, "--input", "-"], input=json.dumps(body),
-                       capture_output=True, text=True)
-    print("live.json aktualisiert" if r.returncode == 0 else f"LIVE-JSON-FEHLER {r.stderr.strip()[:200]}", flush=True)
-
-
 def main():
-    server = http.server.ThreadingHTTPServer(("127.0.0.1", PORT), Handler)
-    print(f"Hub läuft · Live-Ansicht: http://localhost:{PORT}/?k={KEY}", flush=True)
-    if len(sys.argv) > 1:
-        print(f"Von außen:  {sys.argv[1].rstrip('/')}/?k={KEY}", flush=True)
-        live_json(sys.argv[1])
+    server = http.server.ThreadingHTTPServer(("0.0.0.0", PORT), Handler)
+    scheme = "http"
+    if CERT.exists() and KEY.exists():
+        ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+        ctx.load_cert_chain(CERT, KEY)
+        server.socket = ctx.wrap_socket(server.socket, server_side=True)
+        scheme = "https"
+    else:
+        print("Ohne Zertifikat (./zertifikat.sh) geht nur der Mac selbst, nicht das iPhone.", flush=True)
+    print(f"Server läuft · Anzeige: {scheme}://localhost:{PORT}/anzeige", flush=True)
     server.serve_forever()
 
 

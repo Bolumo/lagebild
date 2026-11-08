@@ -1,0 +1,101 @@
+<!doctype html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Lagebild Anzeige</title>
+<style>
+:root{--bg:#0b1220;--card:#131c2e;--line:#26324a;--text:#e6edf7;--dim:#8a98b3;--acc:#4da3ff;--ok:#3ddc97;--bad:#ff5d5d}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--text);font:14px/1.4 -apple-system,system-ui,sans-serif;padding:16px}
+h1{font-size:18px;margin:0}h2{font-size:15px;margin:0}
+.dim{color:var(--dim)}.ok{color:var(--ok)}.bad{color:var(--bad)}
+.card{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:12px;margin-top:12px}
+.grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(300px,1fr));gap:10px;margin-top:10px}
+.plot{border:1px solid var(--line);border-radius:8px;padding:6px 8px}
+.plot div{display:flex;justify-content:space-between;gap:8px;font-size:12px;font-variant-numeric:tabular-nums}
+canvas{display:block;width:100%;height:70px;margin-top:4px}
+canvas.spek{height:140px}
+ul{list-style:none;margin:6px 0 0;padding:0;max-height:240px;overflow:auto}
+li{padding:7px 6px;border-top:1px solid var(--line);cursor:pointer;font-variant-numeric:tabular-nums}
+li.on{background:#1b2740;color:var(--acc)}
+pre{white-space:pre-wrap;font-size:12px;margin:10px 0 0;color:var(--dim)}
+</style>
+</head>
+<body>
+<h1>Lagebild Anzeige</h1>
+<div class="dim" id="status">verbinde …</div>
+<div class="card"><h2>Live</h2><div id="lkopf" class="dim">Keine laufende Messung. Am iPhone einen Modus starten.</div><div class="grid" id="lplots"></div></div>
+<div class="card"><h2>Aufzeichnungen</h2><ul id="liste"></ul></div>
+<div class="card"><div id="akopf" class="dim">–</div><div class="grid" id="aplots"></div><pre id="atext"></pre></div>
+<script src="plot.js"></script>
+<script>
+'use strict';
+/* Anzeige auf dem Mac: oben die laufende Messung (letzte 30 s), unten jede gespeicherte
+   Aufzeichnung komplett mit Auswertung. */
+const $=id=>document.getElementById(id);
+const FENSTER=30000,AUSLASSEN=['mit_schwerkraft','video_s'];
+const lokal=iso=>iso?new Date(iso).toLocaleString('de-DE'):'?';
+
+/* gemeinsame Kacheln: pro Strom und Spalte eine Kurve, für "spek" ein Spektrogramm */
+function kacheln(box,s){
+  box.textContent='';const out=[];
+  for(const [name,rows] of Object.entries(s.streams||{})){if(!rows.length)continue;
+    const cols=(s.columns&&s.columns[name])||rows[0].map((_,i)=>i?'w'+i:'ms');
+    const idx=name==='spek'?[-1]:cols.map((c,i)=>i).filter(i=>i>0&&!AUSLASSEN.includes(cols[i]));
+    for(const i of idx){const d=document.createElement('div');d.className='plot';
+      d.innerHTML='<div><b></b><span></span></div><canvas></canvas>';d.querySelector('b').textContent=i<0?'spek (Spektrogramm)':name+' · '+cols[i];
+      if(i<0)d.querySelector('canvas').className='spek';box.appendChild(d);out.push({d,name,i})}}
+  return out}
+function zeichne(k,s,t0,t1){
+  for(const {d,name,i} of k){const rows=s.streams[name]||[],cv=d.querySelector('canvas');
+    if(i<0){spektrogramm(cv,rows,t0,t1);continue}
+    const mm=linie(cv,rows,i,t0,t1),last=rows.length?rows[rows.length-1][i]:null;
+    d.querySelector('span').textContent=(last==null?'–':last)+(mm?'  ['+fmt(mm[0])+' … '+fmt(mm[1])+']':'')}}
+const tEnde=s=>Math.max(1,...Object.values(s.streams||{}).map(a=>a.length?a[a.length-1][0]:0));
+
+/* ---------- Live ---------- */
+const S={};let seit=0,letzte=0,aktiv=null,neu=false,lk=null,lsig='',fehler='';
+async function poll(){
+  try{const j=await (await fetch('api/live?seit='+seit,{cache:'no-store'})).json();fehler='';
+    for(const [n,m] of j.msgs){seit=n;
+      if(m.auswertung){listeLaden(m.auswertung);continue}
+      letzte=Date.now();const s=S[m.session]||(S[m.session]={id:m.session,streams:{}});
+      if(m.meta){Object.assign(s,m.meta);s.final=!!m.final}
+      for(const [k,rows] of Object.entries(m.chunk||{})){if(!rows.length)continue;const a=s.streams[k]||(s.streams[k]=[]);a.push(...rows);
+        const g=a[a.length-1][0]-FENSTER;let i=0;while(i<a.length&&a[i][0]<g)i++;if(i)a.splice(0,i)}
+      aktiv=s;neu=true}}
+  catch(e){fehler='Server nicht erreichbar'}
+  setTimeout(poll,500)}
+setInterval(()=>{
+  $('status').textContent=fehler||(letzte?'letzte Live-Daten vor '+((Date.now()-letzte)/1000).toFixed(0)+' s':'verbunden');
+  $('status').className=fehler?'bad':Date.now()-letzte<3000?'ok':'dim';
+  if(!neu||!aktiv)return;neu=false;const s=aktiv,sig=s.id+'|'+Object.keys(s.streams).join();
+  if(sig!==lsig){lk=kacheln($('lplots'),s);lsig=sig}
+  const t1=tEnde(s);zeichne(lk,s,t1-FENSTER,t1);
+  $('lkopf').textContent=(s.mode||'?')+' · '+lokal(s.start)+' · '+(t1/1000).toFixed(0)+' s · '+(s.final?'beendet':'läuft')+(s.reference?' · Referenz: '+s.reference:'');
+  $('lkopf').className=s.final?'dim':'ok'},500);
+
+/* ---------- Aufzeichnungen ---------- */
+let liste=[],gewaehlt=null;const cache={};
+async function listeLaden(neueste){
+  try{liste=await (await fetch('api/aufnahmen',{cache:'no-store'})).json()}catch(e){return}
+  const ul=$('liste');ul.textContent='';
+  if(!liste.length){ul.innerHTML='<li class="dim">Noch keine Aufzeichnung gespeichert.</li>';return}
+  for(const a of liste){const li=document.createElement('li');li.className=a.id===gewaehlt?'on':'';
+    li.textContent=lokal(a.start)+' · '+a.mode+(a.reference?' · Referenz: '+a.reference:'')+(a.kurz?' → '+a.kurz.replace(/ \| Referenz:.*$/,''):'');
+    li.onclick=()=>zeige(a.id);ul.appendChild(li)}
+  if(neueste||!gewaehlt)zeige(neueste||liste[0].id)}
+async function zeige(id){
+  gewaehlt=id;for(const li of $('liste').children)li.className='';
+  const i=liste.findIndex(a=>a.id===id);if(i>=0)$('liste').children[i].className='on';
+  try{if(!cache[id])cache[id]=await (await fetch('api/aufnahmen/'+id)).json();
+    $('atext').textContent=await (await fetch('api/aufnahmen/'+id+'.txt',{cache:'no-store'})).text()}catch(e){return}
+  const s=cache[id],t1=tEnde(s);
+  $('akopf').textContent=s.mode+' · '+lokal(s.start)+' · '+(t1/1000).toFixed(1)+' s · '+Object.entries(s.streams).map(([k,a])=>k+' '+a.length+' ('+(a.length/(t1/1000)).toFixed(1)+' Hz)').join(', ')+(s.reference?' · Referenz: '+s.reference:' · keine Referenz');
+  $('akopf').className='';zeichne(kacheln($('aplots'),s),s,0,t1)}
+addEventListener('resize',()=>{if(gewaehlt)zeige(gewaehlt);lsig=''});
+poll();listeLaden();setInterval(()=>listeLaden(),10000);
+</script>
+</body>
+</html>
