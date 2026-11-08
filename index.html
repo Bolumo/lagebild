@@ -157,6 +157,8 @@ nav button:focus-visible{outline:2px solid var(--blue)}
     <label class="hint" for="rRef" style="display:block;margin-top:0">Referenzwert zur Messung, z. B. „Polar H10 62/min, 14 Atemzüge gezählt, 1,5 m frontal“</label>
     <input id="rRef" class="ref" type="text" autocomplete="off" enterkeyhint="done">
     <div class="hint" id="rLive">Keine Live-Verbindung – Export über „Export“ (Teilen, AirDrop an den Mac).</div>
+    <label class="hint" for="rTok" style="display:block">GitHub-Token für Bolumo/lagebild-daten (bleibt nur auf diesem Gerät). Mit Token geht jede Aufzeichnung beim Stopp direkt dorthin.</label>
+    <input id="rTok" class="ref" type="password" autocomplete="off" placeholder="github_pat_…">
     <ul class="log" id="rList" style="margin-top:8px"></ul>
   </div>
 </section>
@@ -238,22 +240,36 @@ const REC=(function(){
   fetch('api/ping',{cache:'no-store'}).then(r=>r.ok?r.json():null).then(j=>{if(j&&j.ok){live=true;$('rLive').textContent='Live-Verbindung zum Mac: Rohdaten gehen direkt dorthin.'}}).catch(()=>{});
   const post=body=>fetch('api/ingest',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)}).catch(()=>{$('rLive').textContent='Live-Verbindung unterbrochen – Export bleibt möglich.'});
   const meta=s=>({app:'lagebild-mm',format:1,mode:s.mode,start:s.start,end:s.end||null,ua:s.ua,reference:s.reference||'',columns:COLS[s.mode]});
+  const json=s=>JSON.stringify(Object.assign(meta(s),{streams:s.streams,events:s.events}));
+  /* GitHub: jede beendete Aufzeichnung als aufnahmen/<id>.json ins Daten-Repo */
+  const GH_REPO='Bolumo/lagebild-daten',tok=$('rTok');
+  try{tok.value=localStorage.getItem('ghToken')||''}catch(e){}
+  tok.onchange=()=>{try{localStorage.setItem('ghToken',tok.value.trim())}catch(e){}render()};
+  function b64(str){const u=new TextEncoder().encode(str);let b='';for(let i=0;i<u.length;i+=0x8000)b+=String.fromCharCode.apply(null,u.subarray(i,i+0x8000));return btoa(b)}
+  async function toGitHub(s){const t=tok.value.trim();if(!t)return;s.gh='lädt hoch …';render();
+    try{const r=await fetch('https://api.github.com/repos/'+GH_REPO+'/contents/aufnahmen/'+s.id+'.json',{method:'PUT',
+        headers:{Authorization:'Bearer '+t,Accept:'application/vnd.github+json'},
+        body:JSON.stringify({message:s.id+(s.reference?' · '+s.reference:''),content:b64(json(s))})});
+      s.gh=r.ok?'auf GitHub ✓':'GitHub-Fehler '+r.status}catch(e){s.gh='GitHub nicht erreichbar'}
+    render()}
   function flush(s){const ch=s.pending;s.pending={};if(Object.keys(ch).length)post({session:s.id,chunk:ch})}
   function start(mode){const now=new Date();const s={id:mode+'-'+now.toISOString().replace(/[:.]/g,'-'),mode,start:now.toISOString(),ua:navigator.userAgent,t0:performance.now(),streams:{},pending:{}};run[mode]=s;
     if(live){post({session:s.id,meta:meta(s)});s.timer=setInterval(()=>flush(s),3000)}}
   function push(mode,stream,row){const s=run[mode];if(!s)return;row.unshift(Math.round(performance.now()-s.t0));(s.streams[stream]||(s.streams[stream]=[])).push(row);if(s.timer)(s.pending[stream]||(s.pending[stream]=[])).push(row)}
   function stop(mode){const s=run[mode];if(!s)return;delete run[mode];s.end=new Date().toISOString();s.reference=$('rRef').value.trim();s.events=events.filter(e=>e.t>=s.start&&e.t<=s.end);
     if(s.timer){clearInterval(s.timer);flush(s);post({session:s.id,meta:meta(s),events:s.events,final:true})}
-    delete s.pending;delete s.timer;done.push(s);render()}
+    delete s.pending;delete s.timer;done.push(s);render();toGitHub(s)}
   async function exportS(s){if(!s.reference)s.reference=$('rRef').value.trim();
-    const f=new File([JSON.stringify(Object.assign(meta(s),{streams:s.streams,events:s.events}))],s.id+'.json',{type:'application/json'});
+    const f=new File([json(s)],s.id+'.json',{type:'application/json'});
     try{if(navigator.canShare&&navigator.canShare({files:[f]})){await navigator.share({files:[f],title:s.id});return}}catch(e){if(e.name==='AbortError')return}
     const a=document.createElement('a');a.href=URL.createObjectURL(f);a.download=f.name;document.body.appendChild(a);a.click();setTimeout(()=>{URL.revokeObjectURL(a.href);a.remove()},1000)}
   function render(){const ul=$('rList');ul.innerHTML='';
     if(!done.length){ul.innerHTML='<li><time>–</time><span>Noch keine Aufzeichnung. Jeder gestartete Modus wird mitgeschrieben.</span><em></em></li>';return}
     done.slice().reverse().forEach(s=>{const li=document.createElement('li');const n=Object.entries(s.streams).map(([k,v])=>k+' '+v.length).join(', ');const dur=Math.round((new Date(s.end)-new Date(s.start))/1000);
-      li.innerHTML='<time>'+fmt(new Date(s.start))+'</time><span>'+s.mode+' · '+dur+' s<br><span class="src">'+n+'</span></span><em></em>';
-      const b=document.createElement('button');b.className='sec';b.textContent='Export';b.onclick=()=>exportS(s);li.lastChild.appendChild(b);ul.appendChild(li)})}
+      li.innerHTML='<time>'+fmt(new Date(s.start))+'</time><span>'+s.mode+' · '+dur+' s<br><span class="src">'+n+(s.gh?' · '+s.gh:'')+'</span></span><em></em>';
+      const b=document.createElement('button');b.className='sec';b.textContent='Export';b.onclick=()=>exportS(s);li.lastChild.appendChild(b);
+      if(tok.value.trim()&&s.gh!=='auf GitHub ✓'&&s.gh!=='lädt hoch …'){const u=document.createElement('button');u.className='sec';u.textContent='Hochladen';u.onclick=()=>toGitHub(s);li.lastChild.appendChild(u)}
+      ul.appendChild(li)})}
   render();
   return{start,push,stop};
 })();

@@ -5,6 +5,7 @@ Kopie von Ralphs Prototyp ([Original](https://bssragu.github.io/lagebild/), Repo
 ## Was anders ist als im Original
 
 - **Rohdaten-Aufzeichnung je Modus** (Tab „Protokoll“ → „Aufzeichnungen“), Export als JSON über das Teilen-Menü (AirDrop an den Mac).
+- **Upload nach GitHub** beim Stopp (privates Daten-Repo, Token nur auf dem Gerät), Abholen und Auswerten auf dem Mac mit `github_abholen.py`.
 - **Referenzwert** pro Messung (z. B. „Polar H10 62/min“), wird beim Beenden mitgespeichert.
 - **Live-Versand an den Mac**, wenn die Seite vom Mac-Server kommt (`server.py`): Daten landen alle 3 s in `daten/<session>.jsonl` und werden nach dem Stopp automatisch ausgewertet (`auswertung.py`).
 - Prozentwert im Protokoll heißt jetzt ehrlich „Signalstärke“, keine Trefferquote.
@@ -13,6 +14,8 @@ Kopie von Ralphs Prototyp ([Original](https://bssragu.github.io/lagebild/), Repo
 ## Starten
 
 **Online (iPhone, ohne Mac):** https://bolumo.github.io/lagebild/ (GitHub Pages, Branch `mm-version`). Aufzeichnen und Exportieren funktionieren dort, der Live-Versand an den Mac nicht.
+
+**Direkt nach GitHub (empfohlen):** Mit einem Token im Feld unter „Aufzeichnungen“ lädt die App jede beendete Aufzeichnung als `aufnahmen/<id>.json` ins private Repo `Bolumo/lagebild-daten` (Format wie der Export). Token: GitHub → Settings → Developer settings → Fine-grained tokens, nur dieses Repo, Berechtigung „Contents: Read and write“. Er bleibt im Browser des Geräts (localStorage). Auf dem Mac holt `python3 github_abholen.py` neue Aufzeichnungen alle 10 s ab und wertet sie aus (`daten/<id>.txt`).
 
 **Mit Mac-Server (Live-Versand):**
 
