@@ -7,7 +7,7 @@
 # (192.168.x.x, 127.x.x.x, *.local, localhost) und gilt 1 Jahr.
 #
 # Danach aufs iPhone:
-#   1. cert/lagebild-ca.pem per AirDrop schicken und das Profil installieren
+#   1. cert/lagebild-ca.cer per AirDrop schicken und das Profil installieren
 #      (Einstellungen → Profil geladen → Installieren)
 #   2. Einstellungen → Allgemein → Info → Zertifikatsvertrauenseinstellungen
 #      → „Lagebild Test-CA“ einschalten
@@ -26,6 +26,7 @@ if [ ! -f lagebild-ca.pem ]; then
   openssl x509 -req -in ca.csr -signkey lagebild-ca-key.pem -days 365 -out lagebild-ca.pem -extfile ca.ext
   rm ca.csr ca.ext
 fi
+openssl x509 -in lagebild-ca.pem -outform der -out lagebild-ca.cer  # fürs iPhone (AirDrop)
 
 printf "subjectAltName=DNS:%s,DNS:localhost,IP:%s,IP:127.0.0.1\nextendedKeyUsage=serverAuth\nbasicConstraints=CA:FALSE\nkeyUsage=critical,digitalSignature,keyEncipherment\n" "$HOST" "$IP" > server.ext
 openssl req -new -newkey rsa:2048 -nodes -keyout server-key.pem -out server.csr -subj "/CN=$HOST"
@@ -35,5 +36,5 @@ chmod 600 lagebild-ca-key.pem server-key.pem
 
 echo
 echo "Fertig."
-echo "Aufs iPhone (AirDrop):  $(pwd)/lagebild-ca.pem"
+echo "Aufs iPhone (AirDrop):  $(pwd)/lagebild-ca.cer"
 echo "Im iPhone-Safari öffnen: https://$HOST:8443/   oder   https://$IP:8443/"

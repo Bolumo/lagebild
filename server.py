@@ -11,11 +11,15 @@ Ohne Zertifikat läuft er per HTTP – das reicht für den Mac selbst
 Fürs iPhone braucht es HTTPS: erst ./zertifikat.sh ausführen.
 """
 import http.server
+import importlib
 import json
 import re
 import ssl
+import threading
 from datetime import datetime, timezone
 from pathlib import Path
+
+import auswertung
 
 ROOT = Path(__file__).resolve().parent
 DATA = ROOT / "daten"
@@ -23,6 +27,7 @@ CERT = ROOT / "cert" / "server.pem"
 KEY = ROOT / "cert" / "server-key.pem"
 PORT = 8443
 MAX_BODY = 20 * 1024 * 1024
+LOCK = threading.Lock()
 
 
 class Handler(http.server.BaseHTTPRequestHandler):
@@ -31,6 +36,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
         if path in ("/", "/index.html"):
             self._send(200, (ROOT / "index.html").read_bytes(), "text/html; charset=utf-8")
         elif path == "/api/ping":
+            print(f"VERBUNDEN {self.client_address[0]}", flush=True)
             self._send(200, b'{"ok":true}', "application/json")
         else:  # nichts anderes ausliefern, schon gar nicht cert/ oder daten/
             self._send(404, b"nicht gefunden", "text/plain; charset=utf-8")
@@ -48,9 +54,16 @@ class Handler(http.server.BaseHTTPRequestHandler):
         session = re.sub(r"[^A-Za-z0-9_-]", "", str(msg.get("session", "")))[:80] or "ohne-id"
         msg["empfangen"] = datetime.now(timezone.utc).isoformat()
         DATA.mkdir(exist_ok=True)
-        with (DATA / f"{session}.jsonl").open("a", encoding="utf-8") as f:
+        with LOCK, (DATA / f"{session}.jsonl").open("a", encoding="utf-8") as f:
             f.write(json.dumps(msg, ensure_ascii=False, separators=(",", ":")) + "\n")
         self._send(200, b'{"ok":true}', "application/json")
+        if "meta" in msg and not msg.get("final"):
+            print(f"START {session}", flush=True)
+        if msg.get("final"):  # kurz warten: der letzte Datenblock kann knapp nach "final" ankommen
+            threading.Timer(1.5, auswerten, args=(session,)).start()
+
+    def log_message(self, *args):  # Zugriffsprotokoll aus: die Ausgabe zeigt nur Auswertungen
+        pass
 
     def _send(self, code, body, ctype):
         self.send_response(code)
@@ -59,6 +72,17 @@ class Handler(http.server.BaseHTTPRequestHandler):
         self.send_header("Cache-Control", "no-store")
         self.end_headers()
         self.wfile.write(body)
+
+
+def auswerten(session):
+    """Schreibt daten/<session>.txt und meldet eine Zeile auf der Konsole."""
+    try:
+        importlib.reload(auswertung)  # Änderungen an auswertung.py gelten ohne Neustart
+        text, kurz = auswertung.auswerten(DATA / f"{session}.jsonl")
+        (DATA / f"{session}.txt").write_text(text + "\n", encoding="utf-8")
+        print(f"AUSWERTUNG {session}: {kurz}", flush=True)
+    except Exception as e:  # Auswertung darf den Empfang nie stören
+        print(f"AUSWERTUNG-FEHLER {session}: {e!r}", flush=True)
 
 
 def main():

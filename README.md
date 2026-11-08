@@ -6,7 +6,7 @@ Kopie von Ralphs Prototyp ([Original](https://bssragu.github.io/lagebild/), Repo
 
 - **Rohdaten-Aufzeichnung je Modus** (Tab „Protokoll“ → „Aufzeichnungen“), Export als JSON über das Teilen-Menü (AirDrop an den Mac).
 - **Referenzwert** pro Messung (z. B. „Polar H10 62/min“), wird beim Beenden mitgespeichert.
-- **Live-Versand an den Mac**, wenn die Seite vom Mac-Server kommt (`server.py`): Daten landen alle 3 s in `daten/<session>.jsonl`.
+- **Live-Versand an den Mac**, wenn die Seite vom Mac-Server kommt (`server.py`): Daten landen alle 3 s in `daten/<session>.jsonl` und werden nach dem Stopp automatisch ausgewertet (`auswertung.py`).
 - Prozentwert im Protokoll heißt jetzt ehrlich „Signalstärke“, keine Trefferquote.
 - Ohne WebGL (z. B. Blockierungsmodus) läuft die App ohne 3D-Grafik weiter, statt komplett auszufallen.
 
@@ -17,9 +17,11 @@ Kopie von Ralphs Prototyp ([Original](https://bssragu.github.io/lagebild/), Repo
 **Mit Mac-Server (Live-Versand):**
 
 ```sh
-python3 server.py        # Mac selbst: http://localhost:8443
 ./zertifikat.sh          # einmalig fürs iPhone (HTTPS); Anleitung steht im Skript
+python3 server.py        # iPhone: https://<Mac-Name>.local:8443/  (ohne Zertifikat nur http://localhost:8443)
 ```
+
+Sobald eine Aufzeichnung endet, wertet `auswertung.py` sie aus: Atemrate aus den Sonar-I/Q-Daten, Puls aus dem Grünkanal, Atmung und Puls aus dem Beschleunigungssensor, Tonhöhe im Flugmodus. Das Ergebnis liegt in `daten/<session>.txt`, die Konsole zeigt eine Zeile `AUSWERTUNG …`. Änderungen an `auswertung.py` gelten ohne Neustart des Servers. Von Hand: `python3 auswertung.py <datei>` (Live-Datei oder Export).
 
 Das iPhone muss im selben WLAN sein. Safari gibt Mikrofon, Kamera und Bewegungssensor nur über HTTPS frei – deshalb das eigene Zertifikat. `cert/` und `daten/` stehen in `.gitignore`.
 
