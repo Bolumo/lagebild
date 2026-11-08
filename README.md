@@ -12,6 +12,10 @@ Kopie von Ralphs Prototyp ([Original](https://bssragu.github.io/lagebild/), Repo
 
 ## Starten
 
+**Online (iPhone, ohne Mac):** https://bolumo.github.io/lagebild/ (GitHub Pages, Branch `mm-version`). Aufzeichnen und Exportieren funktionieren dort, der Live-Versand an den Mac nicht.
+
+**Mit Mac-Server (Live-Versand):**
+
 ```sh
 python3 server.py        # Mac selbst: http://localhost:8443
 ./zertifikat.sh          # einmalig fürs iPhone (HTTPS); Anleitung steht im Skript
